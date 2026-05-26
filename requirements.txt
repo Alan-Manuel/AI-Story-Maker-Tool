@@ -2,3 +2,4 @@ streamlit
 gradio
 requests
 pillow
+pydantic
