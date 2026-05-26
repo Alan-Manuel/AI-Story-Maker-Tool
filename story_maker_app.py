@@ -494,7 +494,7 @@ GENRE_PALETTES = {
 }
 
 
-def build_pollinations_url(prompt: str, width: int = 1024, height: int = 576, seed: int = 42) -> str:
+def build_pollinations_url(prompt: str, width: int = 768, height: int = 432, seed: int = 42) -> str:
     encoded_prompt = urllib.parse.quote(prompt)
     return (
         f"https://image.pollinations.ai/prompt/{encoded_prompt}"
@@ -502,20 +502,42 @@ def build_pollinations_url(prompt: str, width: int = 1024, height: int = 576, se
     )
 
 
-def generate_image_from_prompt(prompt: str, seed: int = 42) -> Optional[Image.Image]:
-    """Generate an image from a scene image prompt using Pollinations AI."""
-    try:
-        url = build_pollinations_url(prompt, seed=seed)
-        resp = requests.get(url, timeout=45)
-        resp.raise_for_status()
+def generate_image_from_prompt(
+    prompt: str,
+    seed: int = 42,
+    retries: int = 3
+) -> Optional[Image.Image]:
+    """
+    Generate an image from a scene image prompt using Pollinations AI.
+    Uses smaller image size + retries to reduce failures for multiple scenes.
+    """
+    for attempt in range(retries):
+        try:
+            url = build_pollinations_url(
+                prompt,
+                width=768,
+                height=432,
+                seed=seed + attempt
+            )
 
-        content_type = resp.headers.get("content-type", "")
-        if "image" not in content_type:
-            return None
+            resp = requests.get(
+                url,
+                timeout=60,
+                headers={"User-Agent": "Mozilla/5.0"}
+            )
+            resp.raise_for_status()
 
-        return Image.open(io.BytesIO(resp.content)).convert("RGB")
-    except Exception:
-        return None
+            content_type = resp.headers.get("content-type", "")
+            if "image" not in content_type:
+                time.sleep(2)
+                continue
+
+            return Image.open(io.BytesIO(resp.content)).convert("RGB")
+
+        except Exception:
+            time.sleep(3)
+
+    return None
 
 
 def create_fallback_image(scene: Scene, genre: str, setting: str) -> Image.Image:
@@ -812,8 +834,8 @@ elif st.session_state.page == "generate":
                             seed=unique_seed
                         )
 
-                        # Small delay helps avoid rapid-fire image endpoint failures/rate limits.
-                        time.sleep(2)
+                        # Longer delay helps avoid rapid-fire image endpoint failures/rate limits.
+                        time.sleep(4)
 
                         if img:
                             images[scene.scene_number] = img
