@@ -1,12 +1,13 @@
 """
-AI Story Maker — Story Forge v4
-- Groq story generation only
-- Prompt-based image generation via Pollinations AI
-- Same Story Forge template/style
+AI Story Maker — Story Forge Kaggle Edition
+- No Groq
+- No OpenAI
+- Story generation through a Kaggle Gradio endpoint
+- Prompt-based scene images through Pollinations AI
 - Story history, regenerate, reading mode, rating, character card, soundtrack mood, Markdown export
 
 Run with:
-    streamlit run story_maker_groq_images.py
+    streamlit run story_maker_app.py
 """
 
 import streamlit as st
@@ -18,14 +19,14 @@ from datetime import datetime
 from PIL import Image, ImageDraw
 from pydantic import BaseModel
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 
 
 # ─────────────────────────────────────────────
 # PAGE CONFIG
 # ─────────────────────────────────────────────
 st.set_page_config(
-    page_title="Story Forge — AI Story Maker",
+    page_title="Story Forge — Kaggle AI Story Maker",
     page_icon="📖",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -202,10 +203,10 @@ header[data-testid="stHeader"] { background: transparent; }
     color: #6f6880;
     letter-spacing: 0.05em;
 }
-.provider-badge-groq {
-    background: #0f2a20;
-    color: #3ecf8e;
-    border: 1px solid #1a4a35;
+.provider-badge-kaggle {
+    background: #10233f;
+    color: #73a7ff;
+    border: 1px solid #244a85;
     border-radius: 999px;
     padding: 0.25rem 0.8rem;
     font-size: 0.72rem;
@@ -293,7 +294,6 @@ class StoryRequest(BaseModel):
     length: int = 400
     character_name: str = "Elara"
     setting: str = "a rain-soaked old city"
-    model: str = "llama3-8b-8192"
     narrator_style: str = "cinematic"
     plot_twist: bool = True
     art_style: str = "cinematic concept art"
@@ -314,7 +314,7 @@ class StoryResult:
     story: str
     scenes: List[Scene]
     word_count: int
-    provider: str = "groq"
+    provider: str = "kaggle-gradio"
     generated_at: str = ""
     character_card: str = ""
     soundtrack_mood: str = ""
@@ -348,12 +348,6 @@ NARRATOR_STYLES = {
     "young-adult": "young-adult style, clear, emotional, and fast-moving",
 }
 
-GROQ_MODELS = {
-    "Llama 3 8B — fast/free": "llama3-8b-8192",
-    "Llama 3 70B — stronger writing": "llama3-70b-8192",
-    "Mixtral 8x7B — creative alternative": "mixtral-8x7b-32768",
-}
-
 ART_STYLES = [
     "cinematic concept art",
     "storybook illustration",
@@ -366,94 +360,75 @@ ART_STYLES = [
 
 
 # ─────────────────────────────────────────────
-# PROMPT BUILDER
+# KAGGLE / GRADIO STORY GENERATION
 # ─────────────────────────────────────────────
-def build_prompt(req: StoryRequest) -> str:
-    scene_blocks = "\n".join([
-        f"""SCENE {i}
-Title: [scene {i} title]
-Description: [2-3 sentences — specific to what happens in this scene]
-Image Prompt: [vivid image-generation prompt for this exact scene — include setting, subject, lighting, mood, art style, and visual details]"""
-        for i in range(1, req.num_scenes + 1)
-    ])
+def normalize_gradio_url(url: str) -> str:
+    return url.strip().rstrip("/")
 
-    twist_instruction = (
-        "Include a satisfying final plot twist that still feels earned."
-        if req.plot_twist
-        else "Do not force a twist ending; focus on a clean resolution."
+
+def call_kaggle_gradio_endpoint(
+    gradio_url: str,
+    req: StoryRequest,
+) -> Dict[str, Any]:
+    """
+    Calls the Kaggle Gradio endpoint created in the notebook.
+
+    Works with the standard Gradio /api/predict endpoint.
+    """
+    url = normalize_gradio_url(gradio_url)
+
+    payload = {
+        "data": [
+            req.prompt,
+            req.genre,
+            req.tone,
+            req.character_name,
+            req.setting,
+            req.num_scenes,
+            req.narrator_style,
+            req.plot_twist,
+            req.art_style,
+        ]
+    }
+
+    response = requests.post(
+        f"{url}/api/predict",
+        json=payload,
+        timeout=240,
     )
-    narrator = NARRATOR_STYLES.get(req.narrator_style, req.narrator_style)
+    response.raise_for_status()
 
-    return f"""You are a creative fiction writer. Write a {TONE_WORDS.get(req.tone, req.tone)} {req.genre} story in a {narrator} narration style.
+    response_json = response.json()
 
-Protagonist: {req.character_name}
-Setting: {req.setting}
-Story prompt: {req.prompt}
-Visual art style for image prompts: {req.art_style}
-Special instruction: {twist_instruction}
+    data = response_json.get("data", [None])[0]
 
-IMPORTANT:
-Write a completely original story based on this exact prompt.
-Do not use generic templates or placeholder text.
-Every detail should connect to the prompt given.
+    # If Gradio returns a JSON string, parse it.
+    if isinstance(data, str):
+        import json
+        data = json.loads(data)
 
-Structure your response EXACTLY like this:
+    if not isinstance(data, dict):
+        raise ValueError("Unexpected response from Kaggle Gradio endpoint.")
 
-TITLE: [a compelling title that fits this specific story]
-
-CHARACTER CARD:
-[3-4 short lines describing the protagonist's role, motivation, fear, and hidden strength]
-
-SOUNDTRACK MOOD:
-[5-8 words describing the music or atmosphere that would fit this story]
-
-STORY:
-[Write a complete, vivid story of approximately {req.length} words.]
-
-{scene_blocks}
-
-Write only the structured output above."""
+    return data
 
 
-# ─────────────────────────────────────────────
-# STORY PARSER
-# ─────────────────────────────────────────────
-def parse_story(raw: str, req: StoryRequest, provider: str = "groq") -> StoryResult:
-    import re
-
-    title_match = re.search(r"TITLE:\s*(.+)", raw)
-    title = title_match.group(1).strip() if title_match else "Untitled Story"
-
-    character_match = re.search(r"CHARACTER CARD:\s*(.+?)(?=SOUNDTRACK MOOD:|STORY:)", raw, re.DOTALL)
-    character_card = (
-        character_match.group(1).strip()
-        if character_match
-        else f"{req.character_name} is the central character, shaped by the setting and conflict."
-    )
-
-    soundtrack_match = re.search(r"SOUNDTRACK MOOD:\s*(.+?)(?=STORY:)", raw, re.DOTALL)
-    soundtrack_mood = (
-        soundtrack_match.group(1).strip()
-        if soundtrack_match
-        else f"{req.tone}, {req.genre}, cinematic atmosphere"
-    )
-
-    story_match = re.search(r"STORY:\s*(.+?)(?=SCENE\s*1)", raw, re.DOTALL)
-    story = story_match.group(1).strip() if story_match else raw[:1200]
-
-    scene_blocks = re.findall(
-        r"SCENE\s*(\d+)\s*Title:\s*(.+?)\s*Description:\s*(.+?)\s*Image Prompt:\s*(.+?)(?=SCENE\s*\d+|$)",
-        raw,
-        re.DOTALL,
-    )
-
+def parse_story_data(data: Dict[str, Any], req: StoryRequest) -> StoryResult:
     scenes = []
-    for num, sc_title, desc, img_prompt in scene_blocks:
+
+    raw_scenes = data.get("scenes", [])
+    if not isinstance(raw_scenes, list):
+        raw_scenes = []
+
+    for i, scene in enumerate(raw_scenes[:req.num_scenes], start=1):
         scenes.append(Scene(
-            scene_number=int(num),
-            title=sc_title.strip(),
-            description=desc.strip(),
-            image_prompt=img_prompt.strip(),
+            scene_number=int(scene.get("scene_number", i)),
+            title=str(scene.get("title", f"Scene {i}")),
+            description=str(scene.get("description", "Scene description unavailable.")),
+            image_prompt=str(scene.get(
+                "image_prompt",
+                f"{req.art_style}, {req.genre} scene in {req.setting}, featuring {req.character_name}"
+            )),
         ))
 
     if not scenes:
@@ -461,53 +436,33 @@ def parse_story(raw: str, req: StoryRequest, provider: str = "groq") -> StoryRes
             scenes.append(Scene(
                 scene_number=i,
                 title=f"Scene {i}",
-                description="Scene description unavailable — try regenerating.",
-                image_prompt=f"{req.art_style}, {req.tone} {req.genre} scene in {req.setting}, featuring {req.character_name}",
+                description=f"{req.character_name} moves through {req.setting}, following the conflict from the prompt.",
+                image_prompt=f"{req.art_style}, {req.genre} scene in {req.setting}, featuring {req.character_name}, {req.tone} mood",
             ))
 
+    story = str(data.get("story", "Story text unavailable. Try regenerating."))
+
     return StoryResult(
-        title=title,
+        title=str(data.get("title", "Untitled Story")),
         story=story,
-        scenes=scenes[:req.num_scenes],
+        scenes=scenes,
         word_count=len(story.split()),
-        provider=provider,
+        provider="kaggle-gradio",
         generated_at=datetime.now().strftime("%d %b %Y, %H:%M"),
-        character_card=character_card,
-        soundtrack_mood=soundtrack_mood,
+        character_card=str(data.get(
+            "character_card",
+            f"{req.character_name} is the central character, shaped by the setting and conflict."
+        )),
+        soundtrack_mood=str(data.get(
+            "soundtrack_mood",
+            f"{req.tone}, {req.genre}, cinematic atmosphere"
+        )),
     )
 
 
-# ─────────────────────────────────────────────
-# GROQ STORY GENERATION
-# ─────────────────────────────────────────────
-def generate_story_groq(req: StoryRequest, api_key: str) -> StoryResult:
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {api_key}",
-    }
-    payload = {
-        "model": req.model,
-        "messages": [
-            {
-                "role": "system",
-                "content": "You are a skilled creative fiction writer. Always follow the exact output structure requested.",
-            },
-            {"role": "user", "content": build_prompt(req)},
-        ],
-        "max_tokens": 1800,
-        "temperature": 0.9,
-    }
-
-    resp = requests.post(
-        "https://api.groq.com/openai/v1/chat/completions",
-        headers=headers,
-        json=payload,
-        timeout=60,
-    )
-    resp.raise_for_status()
-
-    raw = resp.json()["choices"][0]["message"]["content"].strip()
-    return parse_story(raw, req, "groq")
+def generate_story_kaggle(req: StoryRequest, gradio_url: str) -> StoryResult:
+    data = call_kaggle_gradio_endpoint(gradio_url, req)
+    return parse_story_data(data, req)
 
 
 # ─────────────────────────────────────────────
@@ -615,21 +570,17 @@ for k, v in defaults.items():
 with st.sidebar:
     st.markdown("### 📖 Story Forge")
     st.markdown(
-        "<div style='font-size:0.78rem;color:#6f6880;letter-spacing:0.08em;text-transform:uppercase;margin-bottom:0.5rem;'>Groq Story Engine</div>",
+        "<div style='font-size:0.78rem;color:#6f6880;letter-spacing:0.08em;text-transform:uppercase;margin-bottom:0.5rem;'>Kaggle Story Endpoint</div>",
         unsafe_allow_html=True,
     )
 
-    groq_key = st.text_input(
-        "Groq API Key",
-        type="password",
-        placeholder="gsk_…",
-        help="Get a free key at console.groq.com",
+    gradio_url = st.text_input(
+        "Kaggle Gradio URL",
+        placeholder="https://xxxxx.gradio.live",
+        help="Paste the public gradio.live URL from your Kaggle notebook.",
     )
 
-    selected_groq_model_label = st.selectbox("Groq Model", options=list(GROQ_MODELS.keys()))
-    groq_model = GROQ_MODELS[selected_groq_model_label]
-
-    st.markdown("<div style='font-size:0.75rem;color:#3ecf8e;margin-top:0.3rem;'>✓ Groq only — OpenAI removed</div>", unsafe_allow_html=True)
+    st.markdown("<div style='font-size:0.75rem;color:#73a7ff;margin-top:0.3rem;'>✓ Kaggle + Hugging Face endpoint — no Groq/OpenAI</div>", unsafe_allow_html=True)
 
     st.markdown("---")
     st.markdown(
@@ -684,17 +635,17 @@ with st.sidebar:
 if st.session_state.page == "home":
     st.markdown('<div class="hero-title">Story Forge</div>', unsafe_allow_html=True)
     st.markdown(
-        '<div class="hero-subtitle">Groq-powered stories with prompt-based AI scene images</div>',
+        '<div class="hero-subtitle">Kaggle-powered stories with prompt-based AI scene images</div>',
         unsafe_allow_html=True,
     )
     st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
 
     st.markdown("""
-    <div style='font-size:1rem;color:#b3a4c5;line-height:1.8;max-width:760px;margin-bottom:2rem;'>
+    <div style='font-size:1rem;color:#b3a4c5;line-height:1.8;max-width:800px;margin-bottom:2rem;'>
     Story Forge turns a single prompt into a structured short story with scenes, character notes,
-    soundtrack mood, and matching generated images. OpenAI has been removed, so the app now uses
-    <strong style='color:#3ecf8e;'>Groq for story writing</strong> and a prompt-based image endpoint
-    for scene visuals.
+    soundtrack mood, and matching generated images. This version removes Groq and OpenAI, then uses
+    a <strong style='color:#73a7ff;'>Kaggle Gradio endpoint</strong> for story generation and
+    Pollinations AI for scene visuals.
     </div>
     """, unsafe_allow_html=True)
 
@@ -703,8 +654,8 @@ if st.session_state.page == "home":
     fc4, fc5, fc6 = st.columns(3)
 
     for col, icon, title, desc in [
-        (fc1, "⚡", "Groq-only generation", "Uses Groq models for fast story creation. No OpenAI option or OpenAI billing."),
-        (fc2, "🖼️", "Working image generation", "Each scene image prompt is sent to an image-generation endpoint to create matching visuals."),
+        (fc1, "🧪", "Kaggle experiment pipeline", "Run a small Hugging Face model in Kaggle and expose it through Gradio."),
+        (fc2, "🖼️", "Working image generation", "Each scene image prompt is sent to Pollinations AI to create matching visuals."),
         (fc3, "🎭", "Narrator styles", "Choose cinematic, first-person, storybook, noir, or young-adult narration."),
         (fc4, "🌀", "Plot twist mode", "Optionally add an earned twist ending to make stories more memorable."),
         (fc5, "🎬", "Scene breakdown", "Every story is split into vivid scenes with descriptions and image prompts."),
@@ -723,10 +674,10 @@ if st.session_state.page == "home":
 
     st.markdown("### How it works")
     for num, title, desc in [
-        ("1", "Add your Groq API key", "Paste your Groq API key in the sidebar. OpenAI has been removed from this version."),
-        ("2", "Configure the story", "Choose genre, tone, scene count, narrator style, image style, protagonist, and setting."),
-        ("3", "Write or enhance your prompt", "Describe your story idea. Use Enhance Prompt to make a simple idea richer before generation."),
-        ("4", "Generate story and images", "The app creates a story first, then uses each scene's image prompt to generate matching scene artwork."),
+        ("1", "Run the Kaggle notebook", "Start the Hugging Face + Gradio notebook in Kaggle and copy the public gradio.live URL."),
+        ("2", "Paste the endpoint URL", "Paste the URL into the Streamlit sidebar under Kaggle Gradio URL."),
+        ("3", "Configure the story", "Choose genre, tone, scene count, narrator style, image style, protagonist, and setting."),
+        ("4", "Generate story and images", "The app calls Kaggle for structured story JSON, then creates images from each scene prompt."),
         ("5", "Save and export", "Review scenes, download images, export TXT/Markdown, and revisit stories in the History tab."),
     ]:
         st.markdown(f"""
@@ -753,7 +704,7 @@ elif st.session_state.page == "generate":
 
     st.markdown(f"""
     <div style='margin-bottom:1.5rem;'>
-        <span class="provider-badge-groq">🟢 Groq</span>
+        <span class="provider-badge-kaggle">🧪 Kaggle</span>
         <span class="genre-badge">{GENRE_DETAILS[genre]['emoji']} {genre.capitalize()}</span>
         <span class="genre-badge">🎭 {tone.capitalize()}</span>
         <span class="genre-badge">🎬 {num_scenes} scenes</span>
@@ -791,14 +742,14 @@ elif st.session_state.page == "generate":
         st.session_state.reading_mode = reading_mode
 
     def run_generation(prompt_text: str):
-        if not groq_key.strip():
-            st.error("Please add your Groq API key in the sidebar.")
+        if not gradio_url.strip():
+            st.error("Please paste your Kaggle Gradio URL in the sidebar.")
             return
         if not prompt_text.strip():
             st.warning("Please enter a story prompt.")
             return
 
-        with st.spinner("Writing your story with Groq…"):
+        with st.spinner("Writing your story through the Kaggle Gradio endpoint…"):
             try:
                 req = StoryRequest(
                     prompt=prompt_text,
@@ -808,12 +759,13 @@ elif st.session_state.page == "generate":
                     length=story_length,
                     character_name=character_name,
                     setting=setting,
-                    model=groq_model,
                     narrator_style=narrator_style,
                     plot_twist=plot_twist,
                     art_style=art_style,
                 )
-                result = generate_story_groq(req, groq_key)
+
+                result = generate_story_kaggle(req, gradio_url)
+
                 st.session_state.result = result
                 st.session_state.req = req
                 st.session_state.rating = None
@@ -827,7 +779,10 @@ elif st.session_state.page == "generate":
                             f"{scene.image_prompt}, {art_style}, {genre} genre, {tone} mood, "
                             f"high detail, dramatic lighting, no text, no watermark"
                         )
-                        img = generate_image_from_prompt(image_prompt, seed=scene.scene_number * 101 + st.session_state.regenerate_count)
+                        img = generate_image_from_prompt(
+                            image_prompt,
+                            seed=scene.scene_number * 101 + st.session_state.regenerate_count
+                        )
                         images[scene.scene_number] = img if img else create_fallback_image(scene, req.genre, req.setting)
 
                 st.session_state.images = images
@@ -837,7 +792,7 @@ elif st.session_state.page == "generate":
                     "prompt": prompt_text,
                     "genre": genre,
                     "tone": tone,
-                    "provider": "groq",
+                    "provider": "kaggle-gradio",
                     "generated_at": result.generated_at,
                     "word_count": result.word_count,
                     "result": result,
@@ -846,7 +801,7 @@ elif st.session_state.page == "generate":
                 })
 
             except requests.exceptions.HTTPError as e:
-                st.error(f"Groq API error: {e}. Check your API key, model, and usage limits.")
+                st.error(f"Kaggle Gradio endpoint error: {e}. Check that your Kaggle notebook is still running and the URL is correct.")
             except Exception as e:
                 st.error(f"Something went wrong: {e}")
 
@@ -881,7 +836,7 @@ elif st.session_state.page == "generate":
             st.markdown(f'<div class="story-title">{result.title}</div>', unsafe_allow_html=True)
             st.markdown(f"""
             <div style='margin-bottom:1.5rem;'>
-                <span class="provider-badge-groq">Groq</span>
+                <span class="provider-badge-kaggle">Kaggle</span>
                 <span class="genre-badge">{GENRE_DETAILS[req.genre]['emoji']} {req.genre.capitalize()}</span>
                 <span class="genre-badge">🎭 {req.tone.capitalize()}</span>
                 <span style='font-size:0.75rem;color:#6f6880;'>Generated {result.generated_at}</span>
@@ -910,7 +865,7 @@ elif st.session_state.page == "generate":
                 with img_col:
                     img = images.get(scene.scene_number)
                     if img:
-                        st.image(img, use_container_width=True, caption=f"Generated from scene prompt")
+                        st.image(img, use_container_width=True, caption="Generated from scene prompt")
                         st.download_button(
                             label="⬇ Download image",
                             data=pil_to_bytes(img),
@@ -933,7 +888,7 @@ elif st.session_state.page == "generate":
         with tab_export:
             export_text = f"STORY FORGE\n{'='*60}\nTitle: {result.title}\nGenre: {req.genre} | Tone: {req.tone}\n"
             export_text += f"Protagonist: {req.character_name} | Setting: {req.setting}\n"
-            export_text += f"Provider: Groq | Model: {req.model} | Generated: {result.generated_at}\n"
+            export_text += f"Provider: Kaggle Gradio | Generated: {result.generated_at}\n"
             export_text += f"Narrator: {req.narrator_style} | Plot twist: {req.plot_twist} | Image style: {req.art_style}\n"
             export_text += f"Words: {result.word_count}\n\nCHARACTER CARD\n{'-'*60}\n{result.character_card}\n\nSOUNDTRACK MOOD\n{'-'*60}\n{result.soundtrack_mood}\n\nSTORY\n{'-'*60}\n{result.story}\n\nSCENES\n{'-'*60}\n"
 
@@ -947,7 +902,7 @@ elif st.session_state.page == "generate":
                 mime="text/plain",
             )
 
-            markdown_text = f"# {result.title}\n\n**Genre:** {req.genre}  \n**Tone:** {req.tone}  \n**Provider:** Groq  \n**Model:** {req.model}  \n**Generated:** {result.generated_at}  \n**Image Style:** {req.art_style}\n\n## Character Card\n{result.character_card}\n\n## Soundtrack Mood\n{result.soundtrack_mood}\n\n## Story\n{result.story}\n\n## Scenes\n"
+            markdown_text = f"# {result.title}\n\n**Genre:** {req.genre}  \n**Tone:** {req.tone}  \n**Provider:** Kaggle Gradio  \n**Generated:** {result.generated_at}  \n**Image Style:** {req.art_style}\n\n## Character Card\n{result.character_card}\n\n## Soundtrack Mood\n{result.soundtrack_mood}\n\n## Story\n{result.story}\n\n## Scenes\n"
 
             for s in result.scenes:
                 markdown_text += f"\n### Scene {s.scene_number}: {s.title}\n{s.description}\n\n**Image prompt:** {s.image_prompt}\n"
@@ -981,7 +936,7 @@ elif st.session_state.page == "history":
             <div class="history-card">
                 <div class="history-title">{item['title']}</div>
                 <div style='margin:0.3rem 0;'>
-                    <span class="provider-badge-groq">Groq</span>
+                    <span class="provider-badge-kaggle">Kaggle</span>
                     <span class="genre-badge">{GENRE_DETAILS[item['genre']]['emoji']} {item['genre'].capitalize()}</span>
                 </div>
                 <div class="history-meta">"{item['prompt'][:80]}{'…' if len(item['prompt']) > 80 else ''}"</div>
@@ -1013,7 +968,7 @@ elif st.session_state.page == "stats":
     for col, num, label in [
         (s1, total, "Stories generated"),
         (s2, total_words, "Total words written"),
-        (s3, total, "Via Groq"),
+        (s3, total, "Via Kaggle"),
         (s4, st.session_state.regenerate_count, "Generations"),
     ]:
         with col:
