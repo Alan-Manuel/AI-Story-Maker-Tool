@@ -790,12 +790,32 @@ elif st.session_state.page == "generate":
                 with st.spinner("Generating matching scene images…"):
                     for scene in result.scenes:
                         image_prompt = (
-                            f"{scene.image_prompt}, {art_style}, {genre} genre, {tone} mood, "
-                            f"high detail, dramatic lighting, no text, no watermark"
+                            f"{art_style}, "
+                            f"scene {scene.scene_number} of {num_scenes}, "
+                            f"title: {scene.title}, "
+                            f"description: {scene.description}, "
+                            f"main story idea: {prompt_text}, "
+                            f"protagonist: {character_name}, "
+                            f"setting: {setting}, "
+                            f"{genre} genre, "
+                            f"{tone} mood, "
+                            f"cinematic lighting, "
+                            f"highly detailed, "
+                            f"dramatic composition, "
+                            f"movie still, "
+                            f"volumetric lighting, "
+                            f"no text, no watermark"
                         )
+
+                        unique_seed = abs(
+                            hash(
+                                f"{prompt_text}-{scene.scene_number}-{scene.title}-{scene.description}"
+                            )
+                        ) % 100000
+
                         img = generate_image_from_prompt(
                             image_prompt,
-                            seed=scene.scene_number * 101 + st.session_state.regenerate_count
+                            seed=unique_seed
                         )
 
                         if img:
