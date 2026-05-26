@@ -15,6 +15,7 @@ import requests
 import textwrap
 import io
 import urllib.parse
+import time
 from datetime import datetime
 from PIL import Image, ImageDraw
 from pydantic import BaseModel
@@ -790,21 +791,14 @@ elif st.session_state.page == "generate":
                 with st.spinner("Generating matching scene images…"):
                     for scene in result.scenes:
                         image_prompt = (
-                            f"{art_style}, "
-                            f"scene {scene.scene_number} of {num_scenes}, "
-                            f"title: {scene.title}, "
-                            f"description: {scene.description}, "
-                            f"main story idea: {prompt_text}, "
-                            f"protagonist: {character_name}, "
-                            f"setting: {setting}, "
-                            f"{genre} genre, "
-                            f"{tone} mood, "
-                            f"cinematic lighting, "
-                            f"highly detailed, "
-                            f"dramatic composition, "
-                            f"movie still, "
-                            f"volumetric lighting, "
-                            f"no text, no watermark"
+                            f"{art_style}. "
+                            f"{genre} {tone} scene. "
+                            f"Scene {scene.scene_number}: {scene.title}. "
+                            f"{scene.description[:250]}. "
+                            f"Main idea: {prompt_text[:180]}. "
+                            f"Character: {character_name}. "
+                            f"Setting: {setting}. "
+                            f"Cinematic lighting, high detail, no text, no watermark."
                         )
 
                         unique_seed = abs(
@@ -817,6 +811,9 @@ elif st.session_state.page == "generate":
                             image_prompt,
                             seed=unique_seed
                         )
+
+                        # Small delay helps avoid rapid-fire image endpoint failures/rate limits.
+                        time.sleep(2)
 
                         if img:
                             images[scene.scene_number] = img
