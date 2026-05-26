@@ -1,269 +1,1040 @@
+"""
+AI Story Maker — Story Forge v4
+- Groq story generation only
+- Prompt-based image generation via Pollinations AI
+- Same Story Forge template/style
+- Story history, regenerate, reading mode, rating, character card, soundtrack mood, Markdown export
+
+Run with:
+    streamlit run story_maker_groq_images.py
+"""
+
 import streamlit as st
-import random
+import requests
 import textwrap
 import io
+import urllib.parse
 from datetime import datetime
-from dataclasses import dataclass
-from typing import List
 from PIL import Image, ImageDraw
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
+from pydantic import BaseModel
+from dataclasses import dataclass
+from typing import List, Optional
 
-# ---------------------------------------------------
+
+# ─────────────────────────────────────────────
 # PAGE CONFIG
-# ---------------------------------------------------
+# ─────────────────────────────────────────────
 st.set_page_config(
-    page_title="Story Forge ML",
+    page_title="Story Forge — AI Story Maker",
     page_icon="📖",
-    layout="wide"
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
-# ---------------------------------------------------
-# AESTHETIC UI
-# ---------------------------------------------------
+
+# ─────────────────────────────────────────────
+# CUSTOM CSS
+# ─────────────────────────────────────────────
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;600;700&family=Inter:wght@300;400;500&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,700;1,400&family=DM+Sans:wght@300;400;500;700&display=swap');
 
 html, body, [class*="css"] {
-    font-family: 'Inter', sans-serif;
-    background: #0b0d14;
-    color: #f1f1f1;
+    font-family: 'DM Sans', sans-serif;
+    background-color: #0e0e12;
+    color: #e8e4dc;
 }
-
 .stApp {
     background:
-    radial-gradient(circle at top left, #1b1f36 0%, #0b0d14 45%);
+        radial-gradient(ellipse at 20% 0%, #241336 0%, transparent 38%),
+        radial-gradient(ellipse at 85% 20%, #112a3a 0%, transparent 28%),
+        linear-gradient(135deg, #0e0e12 0%, #13111c 100%);
 }
-
-.hero {
-    text-align:center;
-    padding: 2rem 0;
+header[data-testid="stHeader"] { background: transparent; }
+[data-testid="stSidebar"] {
+    background: rgba(19,18,26,0.96) !important;
+    border-right: 1px solid #2a2535;
 }
-
-.hero h1 {
-    font-family: 'Cormorant Garamond', serif;
-    font-size: 5rem;
-    color: #ffffff;
+[data-testid="stSidebar"] * { color: #c8c4bc !important; }
+[data-testid="stSidebar"] .stSelectbox label,
+[data-testid="stSidebar"] .stSlider label,
+[data-testid="stSidebar"] .stTextInput label,
+[data-testid="stSidebar"] .stTextArea label {
+    font-size: 0.78rem !important;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #8f86a8 !important;
 }
-
-.hero p {
-    color: #9ba4d0;
-    font-size: 1.1rem;
+.hero-title {
+    font-family: 'Playfair Display', serif;
+    font-size: 4.2rem;
+    font-weight: 700;
+    line-height: 1.05;
+    color: #f7f1e8;
+    letter-spacing: -0.03em;
+    margin-bottom: 0.2rem;
 }
-
+.hero-subtitle {
+    font-family: 'Playfair Display', serif;
+    font-style: italic;
+    font-size: 1.2rem;
+    color: #b3a4c5;
+    margin-bottom: 2rem;
+}
 .story-card {
-    background: rgba(255,255,255,0.03);
-    border: 1px solid rgba(255,255,255,0.08);
+    background: linear-gradient(135deg, rgba(23,21,31,0.95) 0%, rgba(28,24,40,0.95) 100%);
+    border: 1px solid #332d45;
     border-radius: 18px;
     padding: 2rem;
-    margin-top: 1.5rem;
-    backdrop-filter: blur(14px);
+    margin: 1rem 0;
+    box-shadow: 0 18px 55px rgba(0,0,0,0.25);
 }
-
 .scene-card {
-    background: #121626;
-    border-radius: 16px;
-    padding: 1rem;
+    background: rgba(19,18,26,0.96);
+    border-left: 3px solid #9b7de0;
+    border-radius: 0 14px 14px 0;
+    padding: 1.5rem;
+    margin: 1.2rem 0;
+}
+.scene-number {
+    font-family: 'Playfair Display', serif;
+    font-size: 0.75rem;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: #9b7de0;
+    margin-bottom: 0.3rem;
+}
+.scene-title {
+    font-family: 'Playfair Display', serif;
+    font-size: 1.4rem;
+    font-weight: 700;
+    color: #f0ebe0;
+    margin-bottom: 0.8rem;
+}
+.scene-desc {
+    font-size: 0.95rem;
+    color: #aaa3bb;
+    line-height: 1.7;
     margin-bottom: 1rem;
 }
-
-.genre-chip {
-    display:inline-block;
-    background:#242a45;
-    color:#c6d0ff;
-    padding:0.35rem 0.8rem;
-    border-radius:999px;
-    margin-right:0.4rem;
-    font-size:0.8rem;
+.image-prompt-box {
+    background: #0e0e12;
+    border: 1px dashed #4a4161;
+    border-radius: 10px;
+    padding: 0.8rem 1rem;
+    font-size: 0.78rem;
+    color: #817995;
+    font-style: italic;
+}
+.story-title {
+    font-family: 'Playfair Display', serif;
+    font-size: 2.4rem;
+    font-weight: 700;
+    color: #f7f1e8;
+    margin-bottom: 0.5rem;
+}
+.story-body {
+    font-size: 1rem;
+    color: #d2cdc3;
+    line-height: 1.95;
+    white-space: pre-line;
+}
+.reading-mode {
+    font-family: 'Playfair Display', serif;
+    font-size: 1.18rem;
+    color: #eee7dd;
+    line-height: 2.15;
+    white-space: pre-line;
+    max-width: 720px;
+    margin: 0 auto;
+}
+.word-count {
+    font-size: 0.75rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: #5d5771;
+    margin-top: 1rem;
+}
+.genre-badge {
+    display: inline-block;
+    background: #2a1f42;
+    color: #bba3ff;
+    border: 1px solid #48356d;
+    border-radius: 999px;
+    padding: 0.25rem 0.8rem;
+    font-size: 0.75rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    margin-right: 0.5rem;
+    margin-bottom: 1rem;
+}
+.step-box {
+    background: rgba(23,21,31,0.9);
+    border: 1px solid #302a42;
+    border-radius: 14px;
+    padding: 1.2rem 1.5rem;
+    margin-bottom: 1rem;
+    display:flex;
+    gap:1rem;
+    align-items:flex-start;
+}
+.section-divider {
+    border: none;
+    border-top: 1px solid #2a2535;
+    margin: 2rem 0;
+}
+.history-card {
+    background: rgba(23,21,31,0.95);
+    border: 1px solid #2e2a3d;
+    border-radius: 14px;
+    padding: 1rem 1.4rem;
+    margin-bottom: 0.8rem;
+}
+.history-title {
+    font-family: 'Playfair Display', serif;
+    font-size: 1rem;
+    color: #f0ebe0;
+    font-weight: 700;
+    margin-bottom: 0.2rem;
+}
+.history-meta {
+    font-size: 0.75rem;
+    color: #6f6880;
+    letter-spacing: 0.05em;
+}
+.provider-badge-groq {
+    background: #0f2a20;
+    color: #3ecf8e;
+    border: 1px solid #1a4a35;
+    border-radius: 999px;
+    padding: 0.25rem 0.8rem;
+    font-size: 0.72rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    margin-right: 0.4rem;
+}
+.stat-box {
+    background: rgba(23,21,31,0.95);
+    border: 1px solid #2e2a3d;
+    border-radius: 14px;
+    padding: 1rem;
+    text-align: center;
+}
+.stat-num {
+    font-family: 'Playfair Display', serif;
+    font-size: 2rem;
+    font-weight: 700;
+    color: #9b7de0;
+    line-height: 1;
+}
+.stat-label {
+    font-size: 0.72rem;
+    color: #6f6880;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    margin-top: 0.3rem;
+}
+.character-card {
+    background:#111018;
+    border:1px solid #2e2a3d;
+    border-radius:14px;
+    padding:1rem 1.2rem;
+    margin:1rem 0;
+    color:#aaa3bb;
+    line-height:1.7;
+}
+.stButton > button {
+    background: linear-gradient(135deg, #6d48bb 0%, #9b7de0 100%) !important;
+    color: #fff !important;
+    border: none !important;
+    border-radius: 10px !important;
+    font-family: 'DM Sans', sans-serif !important;
+    font-weight: 700 !important;
+    letter-spacing: 0.04em !important;
+    padding: 0.65rem 1.8rem !important;
+    font-size: 0.92rem !important;
+    transition: all 0.2s ease !important;
+}
+.stButton > button:hover {
+    opacity: 0.9 !important;
+    transform: translateY(-1px);
+}
+.stTabs [data-baseweb="tab-list"] {
+    background: transparent;
+    border-bottom: 1px solid #2a2535;
+    gap: 0;
+}
+.stTabs [data-baseweb="tab"] {
+    background: transparent !important;
+    color: #6f6880 !important;
+    font-family: 'DM Sans', sans-serif !important;
+    font-size: 0.85rem !important;
+    letter-spacing: 0.06em !important;
+    text-transform: uppercase !important;
+    border-radius: 0 !important;
+    padding: 0.7rem 1.5rem !important;
+}
+.stTabs [aria-selected="true"] {
+    color: #c8a8f0 !important;
+    border-bottom: 2px solid #9b7de0 !important;
 }
 </style>
 """, unsafe_allow_html=True)
 
-# ---------------------------------------------------
-# DATA STRUCTURES
-# ---------------------------------------------------
+
+# ─────────────────────────────────────────────
+# MODELS
+# ─────────────────────────────────────────────
+class StoryRequest(BaseModel):
+    prompt: str
+    genre: str = "mystery"
+    tone: str = "suspenseful"
+    num_scenes: int = 3
+    length: int = 400
+    character_name: str = "Elara"
+    setting: str = "a rain-soaked old city"
+    model: str = "llama3-8b-8192"
+    narrator_style: str = "cinematic"
+    plot_twist: bool = True
+    art_style: str = "cinematic concept art"
+
+
 @dataclass
 class Scene:
-    number: int
+    scene_number: int
     title: str
     description: str
+    image_prompt: str
+    image_url: Optional[str] = None
+
 
 @dataclass
 class StoryResult:
     title: str
     story: str
     scenes: List[Scene]
+    word_count: int
+    provider: str = "groq"
+    generated_at: str = ""
+    character_card: str = ""
+    soundtrack_mood: str = ""
 
-# ---------------------------------------------------
-# ML-LIKE STORY ENGINE
-# ---------------------------------------------------
-story_patterns = [
-    "a mysterious glowing door appears in the city",
-    "an astronaut discovers an abandoned signal",
-    "a detective uncovers a hidden society",
-    "a magical forest begins whispering secrets",
-    "an explorer finds an ancient underground kingdom",
-]
 
-genres = {
-    "Fantasy": ["magic", "kingdom", "ancient", "dragon"],
-    "Sci-Fi": ["spaceship", "AI", "future", "signal"],
-    "Mystery": ["clue", "shadow", "detective", "secret"],
-    "Adventure": ["journey", "map", "ruins", "expedition"]
+GENRE_DETAILS = {
+    "mystery":   {"emoji": "🔍", "color": "#4a6fa5", "vibe": "dark, foggy, suspenseful"},
+    "fantasy":   {"emoji": "✨", "color": "#7c5cbf", "vibe": "magical, ethereal, wondrous"},
+    "sci-fi":    {"emoji": "🚀", "color": "#3a9e8f", "vibe": "futuristic, neon, technological"},
+    "thriller":  {"emoji": "⚡", "color": "#b05a3a", "vibe": "tense, high-stakes, urgent"},
+    "adventure": {"emoji": "🗺️", "color": "#7a9e3a", "vibe": "bold, sweeping, epic"},
+    "romance":   {"emoji": "🌹", "color": "#a03a6a", "vibe": "tender, emotional, evocative"},
+    "horror":    {"emoji": "🕷️", "color": "#6a3a3a", "vibe": "eerie, dark, unsettling"},
 }
 
-vectorizer = TfidfVectorizer()
+TONE_WORDS = {
+    "suspenseful": "suspenseful",
+    "dramatic": "dramatic",
+    "dark": "dark and ominous",
+    "lighthearted": "lighthearted and warm",
+    "humorous": "humorous and witty",
+    "emotional": "deeply emotional",
+    "action-packed": "fast-paced and action-packed",
+}
 
-all_patterns = story_patterns + [word for g in genres.values() for word in g]
-X = vectorizer.fit_transform(all_patterns)
+NARRATOR_STYLES = {
+    "cinematic": "cinematic and visually rich",
+    "first-person": "first-person, intimate, and reflective",
+    "storybook": "storybook-like, warm, and imaginative",
+    "noir": "noir-inspired, moody, and sharp",
+    "young-adult": "young-adult style, clear, emotional, and fast-moving",
+}
 
-def detect_theme(prompt):
-    prompt_vec = vectorizer.transform([prompt])
-    similarity = cosine_similarity(prompt_vec, X)
-    best_match = similarity.argmax()
+GROQ_MODELS = {
+    "Llama 3 8B — fast/free": "llama3-8b-8192",
+    "Llama 3 70B — stronger writing": "llama3-70b-8192",
+    "Mixtral 8x7B — creative alternative": "mixtral-8x7b-32768",
+}
 
-    if best_match < len(story_patterns):
-        return story_patterns[best_match]
+ART_STYLES = [
+    "cinematic concept art",
+    "storybook illustration",
+    "dark fantasy digital painting",
+    "watercolor illustration",
+    "noir film still",
+    "anime-inspired key visual",
+    "retro sci-fi poster",
+]
 
-    return random.choice(story_patterns)
 
-# ---------------------------------------------------
-# STORY GENERATOR
-# ---------------------------------------------------
-def generate_story(prompt, genre, protagonist, setting):
+# ─────────────────────────────────────────────
+# PROMPT BUILDER
+# ─────────────────────────────────────────────
+def build_prompt(req: StoryRequest) -> str:
+    scene_blocks = "\n".join([
+        f"""SCENE {i}
+Title: [scene {i} title]
+Description: [2-3 sentences — specific to what happens in this scene]
+Image Prompt: [vivid image-generation prompt for this exact scene — include setting, subject, lighting, mood, art style, and visual details]"""
+        for i in range(1, req.num_scenes + 1)
+    ])
 
-    detected = detect_theme(prompt)
+    twist_instruction = (
+        "Include a satisfying final plot twist that still feels earned."
+        if req.plot_twist
+        else "Do not force a twist ending; focus on a clean resolution."
+    )
+    narrator = NARRATOR_STYLES.get(req.narrator_style, req.narrator_style)
 
-    title_words = [
-        "Echo",
-        "Shadow",
-        "Chronicle",
-        "Signal",
-        "Kingdom",
-        "Gate"
-    ]
+    return f"""You are a creative fiction writer. Write a {TONE_WORDS.get(req.tone, req.tone)} {req.genre} story in a {narrator} narration style.
 
-    title = f"The {random.choice(title_words)} of {protagonist}"
+Protagonist: {req.character_name}
+Setting: {req.setting}
+Story prompt: {req.prompt}
+Visual art style for image prompts: {req.art_style}
+Special instruction: {twist_instruction}
 
-    intro = (
-        f"In {setting}, {protagonist} discovers that {detected}. "
-        f"What begins as curiosity quickly becomes something far more dangerous."
+IMPORTANT:
+Write a completely original story based on this exact prompt.
+Do not use generic templates or placeholder text.
+Every detail should connect to the prompt given.
+
+Structure your response EXACTLY like this:
+
+TITLE: [a compelling title that fits this specific story]
+
+CHARACTER CARD:
+[3-4 short lines describing the protagonist's role, motivation, fear, and hidden strength]
+
+SOUNDTRACK MOOD:
+[5-8 words describing the music or atmosphere that would fit this story]
+
+STORY:
+[Write a complete, vivid story of approximately {req.length} words.]
+
+{scene_blocks}
+
+Write only the structured output above."""
+
+
+# ─────────────────────────────────────────────
+# STORY PARSER
+# ─────────────────────────────────────────────
+def parse_story(raw: str, req: StoryRequest, provider: str = "groq") -> StoryResult:
+    import re
+
+    title_match = re.search(r"TITLE:\s*(.+)", raw)
+    title = title_match.group(1).strip() if title_match else "Untitled Story"
+
+    character_match = re.search(r"CHARACTER CARD:\s*(.+?)(?=SOUNDTRACK MOOD:|STORY:)", raw, re.DOTALL)
+    character_card = (
+        character_match.group(1).strip()
+        if character_match
+        else f"{req.character_name} is the central character, shaped by the setting and conflict."
     )
 
-    middle = (
-        f"As events unfold, hidden truths emerge from the shadows. "
-        f"The deeper {protagonist} goes, the more reality begins to fracture."
+    soundtrack_match = re.search(r"SOUNDTRACK MOOD:\s*(.+?)(?=STORY:)", raw, re.DOTALL)
+    soundtrack_mood = (
+        soundtrack_match.group(1).strip()
+        if soundtrack_match
+        else f"{req.tone}, {req.genre}, cinematic atmosphere"
     )
 
-    ending = (
-        f"In the final confrontation, everything changes forever. "
-        f"{protagonist} must decide whether to embrace the unknown or destroy it."
+    story_match = re.search(r"STORY:\s*(.+?)(?=SCENE\s*1)", raw, re.DOTALL)
+    story = story_match.group(1).strip() if story_match else raw[:1200]
+
+    scene_blocks = re.findall(
+        r"SCENE\s*(\d+)\s*Title:\s*(.+?)\s*Description:\s*(.+?)\s*Image Prompt:\s*(.+?)(?=SCENE\s*\d+|$)",
+        raw,
+        re.DOTALL,
     )
 
-    full_story = f"{intro}\n\n{middle}\n\n{ending}"
+    scenes = []
+    for num, sc_title, desc, img_prompt in scene_blocks:
+        scenes.append(Scene(
+            scene_number=int(num),
+            title=sc_title.strip(),
+            description=desc.strip(),
+            image_prompt=img_prompt.strip(),
+        ))
 
-    scenes = [
-        Scene(1, "The Discovery", intro),
-        Scene(2, "The Descent", middle),
-        Scene(3, "The Final Choice", ending),
-    ]
+    if not scenes:
+        for i in range(1, req.num_scenes + 1):
+            scenes.append(Scene(
+                scene_number=i,
+                title=f"Scene {i}",
+                description="Scene description unavailable — try regenerating.",
+                image_prompt=f"{req.art_style}, {req.tone} {req.genre} scene in {req.setting}, featuring {req.character_name}",
+            ))
 
     return StoryResult(
         title=title,
-        story=full_story,
-        scenes=scenes
+        story=story,
+        scenes=scenes[:req.num_scenes],
+        word_count=len(story.split()),
+        provider=provider,
+        generated_at=datetime.now().strftime("%d %b %Y, %H:%M"),
+        character_card=character_card,
+        soundtrack_mood=soundtrack_mood,
     )
 
-# ---------------------------------------------------
-# IMAGE GENERATION
-# ---------------------------------------------------
-def generate_scene_image(scene_title, genre):
-    W, H = 768, 432
 
-    palettes = {
-        "Fantasy": ((80,40,140), (180,120,255)),
-        "Sci-Fi": ((20,120,180), (120,255,255)),
-        "Mystery": ((40,40,60), (180,180,220)),
-        "Adventure": ((80,100,40), (220,220,120))
+# ─────────────────────────────────────────────
+# GROQ STORY GENERATION
+# ─────────────────────────────────────────────
+def generate_story_groq(req: StoryRequest, api_key: str) -> StoryResult:
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}",
+    }
+    payload = {
+        "model": req.model,
+        "messages": [
+            {
+                "role": "system",
+                "content": "You are a skilled creative fiction writer. Always follow the exact output structure requested.",
+            },
+            {"role": "user", "content": build_prompt(req)},
+        ],
+        "max_tokens": 1800,
+        "temperature": 0.9,
     }
 
-    bg, fg = palettes.get(genre, ((50,50,70),(200,200,255)))
+    resp = requests.post(
+        "https://api.groq.com/openai/v1/chat/completions",
+        headers=headers,
+        json=payload,
+        timeout=60,
+    )
+    resp.raise_for_status()
 
-    img = Image.new("RGB", (W,H), bg)
-    draw = ImageDraw.Draw(img)
+    raw = resp.json()["choices"][0]["message"]["content"].strip()
+    return parse_story(raw, req, "groq")
 
-    for i in range(120):
-        x1 = random.randint(0, W)
-        y1 = random.randint(0, H)
-        x2 = x1 + random.randint(10,120)
-        y2 = y1 + random.randint(10,120)
 
-        draw.ellipse([x1,y1,x2,y2], outline=fg)
+# ─────────────────────────────────────────────
+# IMAGE GENERATION
+# ─────────────────────────────────────────────
+GENRE_PALETTES = {
+    "mystery":   [(20, 25, 40), (60, 80, 120), (180, 160, 200)],
+    "fantasy":   [(25, 15, 40), (100, 60, 160), (220, 180, 255)],
+    "sci-fi":    [(10, 25, 30), (30, 130, 120), (100, 220, 200)],
+    "thriller":  [(25, 15, 10), (140, 60, 30), (220, 140, 80)],
+    "adventure": [(15, 25, 10), (60, 110, 40), (180, 220, 100)],
+    "romance":   [(40, 15, 25), (160, 60, 100), (220, 160, 180)],
+    "horror":    [(15, 10, 10), (80, 30, 30), (160, 80, 80)],
+}
 
-    draw.text((40,40), scene_title, fill=fg)
 
-    return img
-
-# ---------------------------------------------------
-# UI
-# ---------------------------------------------------
-st.markdown("""
-<div class="hero">
-    <h1>Story Forge ML</h1>
-    <p>Local AI-inspired storytelling using procedural generation + ML similarity matching</p>
-</div>
-""", unsafe_allow_html=True)
-
-genre = st.selectbox(
-    "Genre",
-    ["Fantasy", "Sci-Fi", "Mystery", "Adventure"]
-)
-
-protagonist = st.text_input(
-    "Protagonist",
-    "Elara"
-)
-
-setting = st.text_input(
-    "Setting",
-    "a neon-lit forgotten city"
-)
-
-prompt = st.text_area(
-    "Story Prompt",
-    "A strange portal opens beneath the city..."
-)
-
-if st.button("✨ Generate Story"):
-
-    result = generate_story(
-        prompt,
-        genre,
-        protagonist,
-        setting
+def build_pollinations_url(prompt: str, width: int = 1024, height: int = 576, seed: int = 42) -> str:
+    encoded_prompt = urllib.parse.quote(prompt)
+    return (
+        f"https://image.pollinations.ai/prompt/{encoded_prompt}"
+        f"?width={width}&height={height}&seed={seed}&nologo=true&enhance=true"
     )
 
-    st.markdown(f"""
-    <div class="story-card">
-        <h1>{result.title}</h1>
-        <div class="genre-chip">{genre}</div>
-        <br><br>
-        <p style='line-height:2;font-size:1.05rem;'>{result.story}</p>
+
+def generate_image_from_prompt(prompt: str, seed: int = 42) -> Optional[Image.Image]:
+    """Generate an image from a scene image prompt using Pollinations AI."""
+    try:
+        url = build_pollinations_url(prompt, seed=seed)
+        resp = requests.get(url, timeout=45)
+        resp.raise_for_status()
+
+        content_type = resp.headers.get("content-type", "")
+        if "image" not in content_type:
+            return None
+
+        return Image.open(io.BytesIO(resp.content)).convert("RGB")
+    except Exception:
+        return None
+
+
+def create_fallback_image(scene: Scene, genre: str, setting: str) -> Image.Image:
+    """Fallback image if the image endpoint is unavailable."""
+    W, H = 1024, 576
+    palette = GENRE_PALETTES.get(genre, GENRE_PALETTES["mystery"])
+    bg, mid, fg = palette
+    img = Image.new("RGB", (W, H), color=bg)
+    draw = ImageDraw.Draw(img)
+
+    for y in range(H):
+        r = int(bg[0] + (mid[0] - bg[0]) * y / H)
+        g = int(bg[1] + (mid[1] - bg[1]) * y / H)
+        b = int(bg[2] + (mid[2] - bg[2]) * y / H)
+        draw.line([(0, y), (W, y)], fill=(r, g, b))
+
+    for i in range(12):
+        x = 80 + i * 80
+        draw.ellipse([x, 80, x + 180, 260], outline=fg, width=2)
+
+    draw.rectangle([0, 0, 8, H], fill=fg)
+
+    title = f"Scene {scene.scene_number}: {scene.title}"
+    for i, line in enumerate(textwrap.wrap(title, width=42)):
+        draw.text((36, 44 + i * 30), line, fill=fg)
+
+    for i, line in enumerate(textwrap.wrap(setting, width=54)[:3]):
+        draw.text((36, H - 110 + i * 26), line, fill=fg)
+
+    draw.text((W - 260, H - 32), "[ fallback image ]", fill=(90, 90, 105))
+    return img
+
+
+def pil_to_bytes(img: Image.Image) -> bytes:
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def safe_filename(text: str) -> str:
+    cleaned = "".join(ch for ch in text if ch.isalnum() or ch in (" ", "_", "-")).strip()
+    return cleaned.replace(" ", "_")[:80] or "story"
+
+
+# ─────────────────────────────────────────────
+# SESSION STATE
+# ─────────────────────────────────────────────
+defaults = {
+    "result": None,
+    "req": None,
+    "page": "home",
+    "images": {},
+    "history": [],
+    "reading_mode": False,
+    "rating": None,
+    "regenerate_count": 0,
+    "last_prompt": "",
+}
+for k, v in defaults.items():
+    if k not in st.session_state:
+        st.session_state[k] = v
+
+
+# ─────────────────────────────────────────────
+# SIDEBAR
+# ─────────────────────────────────────────────
+with st.sidebar:
+    st.markdown("### 📖 Story Forge")
+    st.markdown(
+        "<div style='font-size:0.78rem;color:#6f6880;letter-spacing:0.08em;text-transform:uppercase;margin-bottom:0.5rem;'>Groq Story Engine</div>",
+        unsafe_allow_html=True,
+    )
+
+    groq_key = st.text_input(
+        "Groq API Key",
+        type="password",
+        placeholder="gsk_…",
+        help="Get a free key at console.groq.com",
+    )
+
+    selected_groq_model_label = st.selectbox("Groq Model", options=list(GROQ_MODELS.keys()))
+    groq_model = GROQ_MODELS[selected_groq_model_label]
+
+    st.markdown("<div style='font-size:0.75rem;color:#3ecf8e;margin-top:0.3rem;'>✓ Groq only — OpenAI removed</div>", unsafe_allow_html=True)
+
+    st.markdown("---")
+    st.markdown(
+        "<div style='font-size:0.78rem;color:#6f6880;letter-spacing:0.08em;text-transform:uppercase;margin-bottom:0.5rem;'>Story Settings</div>",
+        unsafe_allow_html=True,
+    )
+
+    genre = st.selectbox(
+        "Genre",
+        options=list(GENRE_DETAILS.keys()),
+        format_func=lambda g: f"{GENRE_DETAILS[g]['emoji']}  {g.capitalize()}",
+    )
+    tone = st.selectbox(
+        "Tone",
+        options=list(TONE_WORDS.keys()),
+        format_func=lambda t: t.capitalize(),
+    )
+    num_scenes = st.slider("Scenes", min_value=2, max_value=5, value=3)
+    story_length = st.slider("Word count", min_value=150, max_value=700, value=400, step=50)
+    narrator_style = st.selectbox(
+        "Narrator style",
+        options=list(NARRATOR_STYLES.keys()),
+        format_func=lambda n: n.replace("-", " ").title(),
+    )
+    plot_twist = st.toggle("Add plot twist ending", value=True)
+    art_style = st.selectbox("Image style", options=ART_STYLES)
+
+    st.markdown("---")
+    character_name = st.text_input("Protagonist", value="Elara")
+    setting = st.text_input("Setting", value="a rain-soaked old city")
+
+    st.markdown("---")
+    st.markdown(
+        "<div style='font-size:0.78rem;color:#6f6880;letter-spacing:0.08em;text-transform:uppercase;margin-bottom:0.8rem;'>Navigate</div>",
+        unsafe_allow_html=True,
+    )
+
+    for label, pg in [
+        ("🏠  Home", "home"),
+        ("✍️  Generate", "generate"),
+        ("📚  History", "history"),
+        ("📊  Stats", "stats"),
+    ]:
+        if st.button(label, use_container_width=True):
+            st.session_state.page = pg
+            st.rerun()
+
+
+# ─────────────────────────────────────────────
+# PAGE: HOME
+# ─────────────────────────────────────────────
+if st.session_state.page == "home":
+    st.markdown('<div class="hero-title">Story Forge</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="hero-subtitle">Groq-powered stories with prompt-based AI scene images</div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
+
+    st.markdown("""
+    <div style='font-size:1rem;color:#b3a4c5;line-height:1.8;max-width:760px;margin-bottom:2rem;'>
+    Story Forge turns a single prompt into a structured short story with scenes, character notes,
+    soundtrack mood, and matching generated images. OpenAI has been removed, so the app now uses
+    <strong style='color:#3ecf8e;'>Groq for story writing</strong> and a prompt-based image endpoint
+    for scene visuals.
     </div>
     """, unsafe_allow_html=True)
 
-    st.markdown("## 🎬 Scenes")
+    st.markdown("### What you get")
+    fc1, fc2, fc3 = st.columns(3)
+    fc4, fc5, fc6 = st.columns(3)
 
-    for scene in result.scenes:
+    for col, icon, title, desc in [
+        (fc1, "⚡", "Groq-only generation", "Uses Groq models for fast story creation. No OpenAI option or OpenAI billing."),
+        (fc2, "🖼️", "Working image generation", "Each scene image prompt is sent to an image-generation endpoint to create matching visuals."),
+        (fc3, "🎭", "Narrator styles", "Choose cinematic, first-person, storybook, noir, or young-adult narration."),
+        (fc4, "🌀", "Plot twist mode", "Optionally add an earned twist ending to make stories more memorable."),
+        (fc5, "🎬", "Scene breakdown", "Every story is split into vivid scenes with descriptions and image prompts."),
+        (fc6, "📥", "Markdown export", "Download the story in TXT or Markdown format for a portfolio or report."),
+    ]:
+        with col:
+            st.markdown(f"""
+            <div class="stat-box" style='text-align:left;padding:1.2rem;margin-bottom:1rem;'>
+                <div style='font-size:1.6rem;margin-bottom:0.5rem;'>{icon}</div>
+                <div style='font-family:"Playfair Display",serif;font-size:0.95rem;color:#f0ebe0;font-weight:700;margin-bottom:0.3rem;'>{title}</div>
+                <div style='font-size:0.78rem;color:#817995;line-height:1.5;'>{desc}</div>
+            </div>
+            """, unsafe_allow_html=True)
 
-        img = generate_scene_image(scene.title, genre)
+    st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
 
-        st.image(img, use_container_width=True)
-
+    st.markdown("### How it works")
+    for num, title, desc in [
+        ("1", "Add your Groq API key", "Paste your Groq API key in the sidebar. OpenAI has been removed from this version."),
+        ("2", "Configure the story", "Choose genre, tone, scene count, narrator style, image style, protagonist, and setting."),
+        ("3", "Write or enhance your prompt", "Describe your story idea. Use Enhance Prompt to make a simple idea richer before generation."),
+        ("4", "Generate story and images", "The app creates a story first, then uses each scene's image prompt to generate matching scene artwork."),
+        ("5", "Save and export", "Review scenes, download images, export TXT/Markdown, and revisit stories in the History tab."),
+    ]:
         st.markdown(f"""
-        <div class="scene-card">
-            <h3>{scene.number}. {scene.title}</h3>
-            <p>{scene.description}</p>
+        <div class="step-box">
+            <div style='font-family:"Playfair Display",serif;font-size:1.8rem;font-weight:700;color:#9b7de0;min-width:2.2rem;line-height:1;'>{num}</div>
+            <div>
+                <div style='font-family:"Playfair Display",serif;font-size:1rem;color:#f0ebe0;margin-bottom:0.3rem;font-weight:700;'>{title}</div>
+                <div style='font-size:0.88rem;color:#8f86a8;line-height:1.6;'>{desc}</div>
+            </div>
         </div>
         """, unsafe_allow_html=True)
+
+    st.markdown("")
+    if st.button("✍️  Start generating →"):
+        st.session_state.page = "generate"
+        st.rerun()
+
+
+# ─────────────────────────────────────────────
+# PAGE: GENERATE
+# ─────────────────────────────────────────────
+elif st.session_state.page == "generate":
+    st.markdown('<div class="hero-title" style="font-size:2.4rem;">Generate Your Story</div>', unsafe_allow_html=True)
+
+    st.markdown(f"""
+    <div style='margin-bottom:1.5rem;'>
+        <span class="provider-badge-groq">🟢 Groq</span>
+        <span class="genre-badge">{GENRE_DETAILS[genre]['emoji']} {genre.capitalize()}</span>
+        <span class="genre-badge">🎭 {tone.capitalize()}</span>
+        <span class="genre-badge">🎬 {num_scenes} scenes</span>
+        <span class="genre-badge">🖼️ {art_style}</span>
+    </div>
+    """, unsafe_allow_html=True)
+
+    prompt = st.text_area(
+        "Your story prompt",
+        value=st.session_state.last_prompt,
+        placeholder="e.g. Max, in a crowded city alleyway, stumbles upon a glowing magical gate that wasn't there yesterday…",
+        height=120,
+        help="The more specific your prompt, the more unique your story and generated images will be.",
+    )
+
+    enh_col1, enh_col2 = st.columns([1, 4])
+    with enh_col1:
+        enhance_clicked = st.button("🪄 Enhance Prompt", use_container_width=True)
+    with enh_col2:
+        if enhance_clicked:
+            base = prompt.strip() or f"{character_name} faces an unexpected conflict in {setting}"
+            st.session_state.last_prompt = (
+                f"{base}. Add a clear central conflict, one surprising discovery, emotional stakes for {character_name}, "
+                f"and a vivid final moment that fits the {genre} genre and {tone} tone."
+            )
+            st.rerun()
+
+    col1, col2, col3 = st.columns([1, 1, 3])
+    with col1:
+        generate_clicked = st.button("✨  Generate", use_container_width=True)
+    with col2:
+        regen_clicked = st.button("🔄  Regenerate", use_container_width=True, disabled=st.session_state.result is None)
+    with col3:
+        reading_mode = st.toggle("📖 Reading mode", value=st.session_state.reading_mode)
+        st.session_state.reading_mode = reading_mode
+
+    def run_generation(prompt_text: str):
+        if not groq_key.strip():
+            st.error("Please add your Groq API key in the sidebar.")
+            return
+        if not prompt_text.strip():
+            st.warning("Please enter a story prompt.")
+            return
+
+        with st.spinner("Writing your story with Groq…"):
+            try:
+                req = StoryRequest(
+                    prompt=prompt_text,
+                    genre=genre,
+                    tone=tone,
+                    num_scenes=num_scenes,
+                    length=story_length,
+                    character_name=character_name,
+                    setting=setting,
+                    model=groq_model,
+                    narrator_style=narrator_style,
+                    plot_twist=plot_twist,
+                    art_style=art_style,
+                )
+                result = generate_story_groq(req, groq_key)
+                st.session_state.result = result
+                st.session_state.req = req
+                st.session_state.rating = None
+                st.session_state.regenerate_count += 1
+                st.session_state.last_prompt = prompt_text
+
+                images = {}
+                with st.spinner("Generating matching scene images…"):
+                    for scene in result.scenes:
+                        image_prompt = (
+                            f"{scene.image_prompt}, {art_style}, {genre} genre, {tone} mood, "
+                            f"high detail, dramatic lighting, no text, no watermark"
+                        )
+                        img = generate_image_from_prompt(image_prompt, seed=scene.scene_number * 101 + st.session_state.regenerate_count)
+                        images[scene.scene_number] = img if img else create_fallback_image(scene, req.genre, req.setting)
+
+                st.session_state.images = images
+
+                st.session_state.history.append({
+                    "title": result.title,
+                    "prompt": prompt_text,
+                    "genre": genre,
+                    "tone": tone,
+                    "provider": "groq",
+                    "generated_at": result.generated_at,
+                    "word_count": result.word_count,
+                    "result": result,
+                    "req": req,
+                    "images": images,
+                })
+
+            except requests.exceptions.HTTPError as e:
+                st.error(f"Groq API error: {e}. Check your API key, model, and usage limits.")
+            except Exception as e:
+                st.error(f"Something went wrong: {e}")
+
+    if generate_clicked and prompt.strip():
+        run_generation(prompt)
+    elif regen_clicked and st.session_state.req:
+        run_generation(st.session_state.req.prompt)
+
+    if st.session_state.result:
+        result: StoryResult = st.session_state.result
+        req: StoryRequest = st.session_state.req
+        images = st.session_state.images
+
+        st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
+
+        st.markdown("**Rate this story:**")
+        rating_cols = st.columns(6)
+        for i, col in enumerate(rating_cols[:5], 1):
+            with col:
+                star = "⭐" if (st.session_state.rating and i <= st.session_state.rating) else "☆"
+                if st.button(f"{star} {i}", key=f"rate_{i}"):
+                    st.session_state.rating = i
+                    st.rerun()
+        if st.session_state.rating:
+            st.markdown(f"<div style='font-size:0.82rem;color:#9b7de0;margin-top:0.3rem;'>Rated {st.session_state.rating}/5 ⭐</div>", unsafe_allow_html=True)
+
+        st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
+
+        tab_story, tab_scenes, tab_export = st.tabs(["📖  Full Story", "🎬  Scenes & Images", "📥  Export"])
+
+        with tab_story:
+            st.markdown(f'<div class="story-title">{result.title}</div>', unsafe_allow_html=True)
+            st.markdown(f"""
+            <div style='margin-bottom:1.5rem;'>
+                <span class="provider-badge-groq">Groq</span>
+                <span class="genre-badge">{GENRE_DETAILS[req.genre]['emoji']} {req.genre.capitalize()}</span>
+                <span class="genre-badge">🎭 {req.tone.capitalize()}</span>
+                <span style='font-size:0.75rem;color:#6f6880;'>Generated {result.generated_at}</span>
+            </div>
+            """, unsafe_allow_html=True)
+
+            st.markdown(f"""
+            <div class="character-card">
+                <strong>Character card</strong><br>{result.character_card}<br><br>
+                <strong>Soundtrack mood</strong><br>{result.soundtrack_mood}
+            </div>
+            """, unsafe_allow_html=True)
+
+            if st.session_state.reading_mode:
+                st.markdown(f'<div class="reading-mode">{result.story}</div>', unsafe_allow_html=True)
+            else:
+                st.markdown(f'<div class="story-card"><div class="story-body">{result.story}</div></div>', unsafe_allow_html=True)
+
+            st.markdown(f'<div class="word-count">Word count: {result.word_count}</div>', unsafe_allow_html=True)
+
+        with tab_scenes:
+            st.markdown(f"<div style='color:#6f6880;font-size:0.82rem;letter-spacing:0.1em;text-transform:uppercase;margin-bottom:1.5rem;'>{len(result.scenes)} scenes generated</div>", unsafe_allow_html=True)
+
+            for scene in result.scenes:
+                img_col, text_col = st.columns([5, 4])
+                with img_col:
+                    img = images.get(scene.scene_number)
+                    if img:
+                        st.image(img, use_container_width=True, caption=f"Generated from scene prompt")
+                        st.download_button(
+                            label="⬇ Download image",
+                            data=pil_to_bytes(img),
+                            file_name=f"scene_{scene.scene_number}_{safe_filename(scene.title)}.png",
+                            mime="image/png",
+                            use_container_width=True,
+                            key=f"dl_img_{scene.scene_number}",
+                        )
+                with text_col:
+                    st.markdown(f"""
+                    <div class="scene-card">
+                        <div class="scene-number">Scene {scene.scene_number}</div>
+                        <div class="scene-title">{scene.title}</div>
+                        <div class="scene-desc">{scene.description}</div>
+                        <div class="image-prompt-box">🎨 <strong>Image prompt:</strong><br>{scene.image_prompt}</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                st.markdown("")
+
+        with tab_export:
+            export_text = f"STORY FORGE\n{'='*60}\nTitle: {result.title}\nGenre: {req.genre} | Tone: {req.tone}\n"
+            export_text += f"Protagonist: {req.character_name} | Setting: {req.setting}\n"
+            export_text += f"Provider: Groq | Model: {req.model} | Generated: {result.generated_at}\n"
+            export_text += f"Narrator: {req.narrator_style} | Plot twist: {req.plot_twist} | Image style: {req.art_style}\n"
+            export_text += f"Words: {result.word_count}\n\nCHARACTER CARD\n{'-'*60}\n{result.character_card}\n\nSOUNDTRACK MOOD\n{'-'*60}\n{result.soundtrack_mood}\n\nSTORY\n{'-'*60}\n{result.story}\n\nSCENES\n{'-'*60}\n"
+
+            for s in result.scenes:
+                export_text += f"\nScene {s.scene_number}: {s.title}\n{s.description}\nImage Prompt: {s.image_prompt}\n"
+
+            st.download_button(
+                "📄  Download story (.txt)",
+                data=export_text,
+                file_name=f"{safe_filename(result.title)}.txt",
+                mime="text/plain",
+            )
+
+            markdown_text = f"# {result.title}\n\n**Genre:** {req.genre}  \n**Tone:** {req.tone}  \n**Provider:** Groq  \n**Model:** {req.model}  \n**Generated:** {result.generated_at}  \n**Image Style:** {req.art_style}\n\n## Character Card\n{result.character_card}\n\n## Soundtrack Mood\n{result.soundtrack_mood}\n\n## Story\n{result.story}\n\n## Scenes\n"
+
+            for s in result.scenes:
+                markdown_text += f"\n### Scene {s.scene_number}: {s.title}\n{s.description}\n\n**Image prompt:** {s.image_prompt}\n"
+
+            st.download_button(
+                "📝  Download story (.md)",
+                data=markdown_text,
+                file_name=f"{safe_filename(result.title)}.md",
+                mime="text/markdown",
+            )
+
+            st.markdown("#### Scene image prompts")
+            for s in result.scenes:
+                with st.expander(f"Scene {s.scene_number}: {s.title}"):
+                    st.code(s.image_prompt, language=None)
+
+
+# ─────────────────────────────────────────────
+# PAGE: HISTORY
+# ─────────────────────────────────────────────
+elif st.session_state.page == "history":
+    st.markdown('<div class="hero-title" style="font-size:2.4rem;">Story History</div>', unsafe_allow_html=True)
+    st.markdown('<div class="hero-subtitle">Every story generated this session</div>', unsafe_allow_html=True)
+    st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
+
+    if not st.session_state.history:
+        st.markdown("<div style='color:#6f6880;font-size:1rem;'>No stories generated yet. Head to Generate to create your first story.</div>", unsafe_allow_html=True)
+    else:
+        for i, item in enumerate(reversed(st.session_state.history)):
+            st.markdown(f"""
+            <div class="history-card">
+                <div class="history-title">{item['title']}</div>
+                <div style='margin:0.3rem 0;'>
+                    <span class="provider-badge-groq">Groq</span>
+                    <span class="genre-badge">{GENRE_DETAILS[item['genre']]['emoji']} {item['genre'].capitalize()}</span>
+                </div>
+                <div class="history-meta">"{item['prompt'][:80]}{'…' if len(item['prompt']) > 80 else ''}"</div>
+                <div class="history-meta" style='margin-top:0.3rem;'>{item['word_count']} words · {item['generated_at']}</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            if st.button(f"Load this story", key=f"load_{i}"):
+                st.session_state.result = item["result"]
+                st.session_state.req = item["req"]
+                st.session_state.images = item["images"]
+                st.session_state.page = "generate"
+                st.rerun()
+
+
+# ─────────────────────────────────────────────
+# PAGE: STATS
+# ─────────────────────────────────────────────
+elif st.session_state.page == "stats":
+    st.markdown('<div class="hero-title" style="font-size:2.4rem;">Session Stats</div>', unsafe_allow_html=True)
+    st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
+
+    history = st.session_state.history
+    total = len(history)
+    total_words = sum(h["word_count"] for h in history)
+    genres_used = list(set(h["genre"] for h in history))
+
+    s1, s2, s3, s4 = st.columns(4)
+    for col, num, label in [
+        (s1, total, "Stories generated"),
+        (s2, total_words, "Total words written"),
+        (s3, total, "Via Groq"),
+        (s4, st.session_state.regenerate_count, "Generations"),
+    ]:
+        with col:
+            st.markdown(f"""
+            <div class="stat-box">
+                <div class="stat-num">{num}</div>
+                <div class="stat-label">{label}</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+    if history:
+        st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
+        st.markdown("#### Genres explored")
+        st.markdown(
+            " ".join([
+                f'<span class="genre-badge">{GENRE_DETAILS[g]["emoji"]} {g.capitalize()}</span>'
+                for g in genres_used
+            ]),
+            unsafe_allow_html=True,
+        )
+
+        st.markdown("#### Most recent story")
+        last = history[-1]
+        st.markdown(f"**{last['title']}** — _{last['prompt'][:100]}_")
