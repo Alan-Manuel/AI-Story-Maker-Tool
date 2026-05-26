@@ -429,7 +429,12 @@ def parse_story_data(data: Dict[str, Any], req: StoryRequest) -> StoryResult:
             description=str(scene.get("description", "Scene description unavailable.")),
             image_prompt=str(scene.get(
                 "image_prompt",
-                f"{req.art_style}, {req.genre} scene in {req.setting}, featuring {req.character_name}"
+                f"{req.art_style}, "
+                f"{req.genre} scene, "
+                f"{req.character_name} in {req.setting}, "
+                f"inspired by: {req.prompt}, "
+                f"{req.tone} mood, "
+                f"cinematic lighting, highly detailed, dramatic composition, volumetric lighting"
             )),
         ))
 
@@ -439,7 +444,14 @@ def parse_story_data(data: Dict[str, Any], req: StoryRequest) -> StoryResult:
                 scene_number=i,
                 title=f"Scene {i}",
                 description=f"{req.character_name} moves through {req.setting}, following the conflict from the prompt.",
-                image_prompt=f"{req.art_style}, {req.genre} scene in {req.setting}, featuring {req.character_name}, {req.tone} mood",
+                image_prompt=(
+                    f"{req.art_style}, "
+                    f"{req.genre} cinematic scene, "
+                    f"{req.character_name} in {req.setting}, "
+                    f"inspired by: {req.prompt}, "
+                    f"{req.tone} atmosphere, "
+                    f"high detail, dramatic composition, movie still, volumetric lighting"
+                ),
             ))
 
     story = str(data.get("story", "Story text unavailable. Try regenerating."))
@@ -785,7 +797,18 @@ elif st.session_state.page == "generate":
                             image_prompt,
                             seed=scene.scene_number * 101 + st.session_state.regenerate_count
                         )
-                        images[scene.scene_number] = img if img else create_fallback_image(scene, req.genre, req.setting)
+
+                        if img:
+                            images[scene.scene_number] = img
+                        else:
+                            st.warning(
+                                f"Scene {scene.scene_number} image generation failed — using fallback image."
+                            )
+                            images[scene.scene_number] = create_fallback_image(
+                                scene,
+                                req.genre,
+                                req.setting
+                            )
 
                 st.session_state.images = images
 
