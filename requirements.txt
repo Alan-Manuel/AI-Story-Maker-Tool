@@ -1,5 +1,6 @@
 streamlit
 gradio
+gradio_client
 requests
 pillow
 pydantic
