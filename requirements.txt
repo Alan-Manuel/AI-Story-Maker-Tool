@@ -1,4 +1,5 @@
 streamlit
-pydantic
 pillow
-requests
+scikit-learn
+numpy
+pandas
