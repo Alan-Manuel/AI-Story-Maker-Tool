@@ -20,6 +20,7 @@ from PIL import Image, ImageDraw
 from pydantic import BaseModel
 from dataclasses import dataclass
 from typing import List, Optional, Dict, Any
+from gradio_client import Client
 
 
 # ─────────────────────────────────────────────
@@ -373,12 +374,17 @@ def call_kaggle_gradio_endpoint(
     """
     Calls the Kaggle Gradio endpoint created in the notebook.
 
-    Works with the standard Gradio /api/predict endpoint.
+    IMPORTANT:
+    The Kaggle notebook uses btn.click(..., api_name="generate_story"),
+    so the Streamlit app must call api_name="/generate_story" through
+    gradio_client. Calling /api/predict directly can produce a 404.
     """
     url = normalize_gradio_url(gradio_url)
 
-    payload = {
-        "data": [
+    try:
+        client = Client(url)
+
+        data = client.predict(
             req.prompt,
             req.genre,
             req.tone,
@@ -388,27 +394,23 @@ def call_kaggle_gradio_endpoint(
             req.narrator_style,
             req.plot_twist,
             req.art_style,
-        ]
-    }
+            api_name="/generate_story",
+        )
+    except Exception as e:
+        raise RuntimeError(
+            "Could not call the Kaggle Gradio endpoint. Make sure the Kaggle notebook "
+            "is still running, use the public https://xxxxx.gradio.live URL, and confirm "
+            "the notebook endpoint uses api_name='generate_story'. Original error: "
+            f"{e}"
+        )
 
-    response = requests.post(
-        f"{url}/api/predict",
-        json=payload,
-        timeout=240,
-    )
-    response.raise_for_status()
-
-    response_json = response.json()
-
-    data = response_json.get("data", [None])[0]
-
-    # If Gradio returns a JSON string, parse it.
+    # Gradio can return either a dict directly or a JSON string.
     if isinstance(data, str):
         import json
         data = json.loads(data)
 
     if not isinstance(data, dict):
-        raise ValueError("Unexpected response from Kaggle Gradio endpoint.")
+        raise ValueError(f"Unexpected response from Kaggle Gradio endpoint: {type(data)}")
 
     return data
 
