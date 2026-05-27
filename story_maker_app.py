@@ -528,16 +528,12 @@ def expand_short_prompt(
     )
 
     return (
-        f"Create a finished short story only. Do not include notes, labels, or prompt instructions. "
-        f"Begin with the first sentence of the story. "
-        f"Use this idea: {clean_prompt}. "
-        f"The protagonist is {character_name}. "
-        f"The setting is {setting}. "
+        f"{character_name} is in {setting}. "
+        f"Core story idea: {clean_prompt}. "
         f"Genre: {genre}. Tone: {tone}. "
-        f"Use a clear beginning, middle, and ending. "
-        f"Make every important keyword from the idea central to the plot. "
-        f"Include vivid, image-friendly moments. "
-        f"Match any requested ending mood such as sad, hopeful, tragic, or mysterious. "
+        f"Important elements from the idea should drive the plot. "
+        f"The story should have a clear beginning, middle, and ending. "
+        f"The ending should match any mood mentioned in the idea, such as sad, tragic, hopeful, or mysterious. "
         f"{twist_instruction} "
         f"Narration style: {narrator_style}."
     )
@@ -605,24 +601,31 @@ def build_backup_image_prompt(
 def clean_generated_story(story: str) -> str:
     """
     Removes prompt/instruction echo from small Kaggle/HF model outputs.
-    This lets users type short ideas while still showing only the story.
+    The app should display only finished story prose.
     """
     cleaned = str(story).strip()
 
-    # If the model repeats the prompt/instructions, keep the part most likely to be story text.
-    markers = [
-        "Start directly with the story.",
-        "Narration style:",
+    # Remove common instruction blocks if the model echoed them.
+    echo_markers = [
+        "Create a finished short story only.",
+        "Do not include notes, labels, or prompt instructions.",
+        "Begin with the first sentence of the story.",
+        "Use this idea:",
         "Story idea:",
-        "ONLY write the story itself.",
-        "Do NOT explain the prompt.",
+        "Genre:",
+        "Tone:",
+        "Main character:",
+        "Setting:",
+        "Narration style:",
+        "Return valid JSON only.",
     ]
 
-    for marker in markers:
+    for marker in echo_markers:
         if marker in cleaned:
-            cleaned = cleaned.split(marker)[-1].strip()
+            parts = cleaned.split(marker)
+            # Prefer the text after the final echoed marker.
+            cleaned = parts[-1].strip()
 
-    # Remove leftover instruction fragments if they still appear.
     bad_phrases = [
         "You are a creative fiction writer.",
         "ONLY write the story itself.",
@@ -630,19 +633,44 @@ def clean_generated_story(story: str) -> str:
         "Do NOT say phrases like 'Write a story' or 'Main character'.",
         "Do NOT explain the prompt.",
         "Start directly with the story.",
+        "Create a finished short story only.",
+        "Do not include notes, labels, or prompt instructions.",
+        "Begin with the first sentence of the story.",
     ]
 
     for phrase in bad_phrases:
         cleaned = cleaned.replace(phrase, "").strip()
 
-    # If the model leaves metadata before the actual story, trim common labels.
-    for label in ["Genre:", "Tone:", "Main character:", "Setting:"]:
-        if label in cleaned and len(cleaned.split(label)[0]) < 80:
-            cleaned = cleaned.split(label)[-1].strip()
+    # If the model only returns a fragment like "cinematic...", avoid showing that as a full story.
+    if len(cleaned.split()) < 25:
+        return "Story text unavailable. Try regenerating or reduce the word count slightly."
 
-    # Final fallback so UI never looks empty.
-    return cleaned or "Story text unavailable. Try regenerating."
+    return cleaned
 
+
+def clean_scene_text(text: str, req: StoryRequest, scene_number: int) -> str:
+    """
+    Prevent scene cards from showing prompt instructions instead of scene summaries.
+    """
+    cleaned = str(text).strip()
+
+    bad_markers = [
+        "Create a finished short story only.",
+        "Do not include notes",
+        "Use this idea:",
+        "Genre:",
+        "Tone:",
+        "Narration style:",
+        "Return valid JSON only.",
+    ]
+
+    if any(marker in cleaned for marker in bad_markers) or len(cleaned.split()) > 90:
+        return (
+            f"{req.character_name} faces a key {req.genre} moment in {req.setting}, "
+            f"driven by the idea: {req.prompt[:120]}."
+        )
+
+    return cleaned or f"{req.character_name} faces an important moment in {req.setting}."
 
 def parse_story_data(data: Dict[str, Any], req: StoryRequest) -> StoryResult:
     scenes = []
@@ -655,7 +683,7 @@ def parse_story_data(data: Dict[str, Any], req: StoryRequest) -> StoryResult:
         scenes.append(Scene(
             scene_number=int(scene.get("scene_number", i)),
             title=str(scene.get("title", f"Scene {i}")),
-            description=str(scene.get("description", "Scene description unavailable.")),
+            description=clean_scene_text(scene.get("description", "Scene description unavailable."), req, i),
             image_prompt=str(scene.get(
                 "image_prompt",
                 f"{req.art_style}, "
@@ -739,7 +767,7 @@ def generate_image_from_prompt(
     retries: int = 1,
     width: int = 512,
     height: int = 320,
-    timeout: int = 18,
+    timeout: int = 45,
 ) -> Optional[Image.Image]:
     """
     Fast image generation through Pollinations AI.
@@ -1079,6 +1107,7 @@ elif st.session_state.page == "generate":
                         original_prompt=prompt_text,
                         total_scenes=num_scenes,
                     )
+                    scene.image_prompt = image_prompt
 
                     unique_seed = abs(
                         hash(
@@ -1090,9 +1119,9 @@ elif st.session_state.page == "generate":
                         image_prompt,
                         seed=unique_seed,
                         retries=2 if fast_mode else 4,
-                        width=448 if fast_mode else 768,
-                        height=256 if fast_mode else 432,
-                        timeout=18 if fast_mode else 60,
+                        width=512 if fast_mode else 768,
+                        height=320 if fast_mode else 432,
+                        timeout=45 if fast_mode else 60,
                     )
 
                     # In slower mode, try a backup prompt before falling back.
