@@ -22,6 +22,7 @@ from pydantic import BaseModel
 from dataclasses import dataclass
 from typing import List, Optional, Dict, Any
 from gradio_client import Client
+import random
 
 
 # ─────────────────────────────────────────────
@@ -416,6 +417,84 @@ def call_kaggle_gradio_endpoint(
     return data
 
 
+def make_unique_title(raw_title: str, req: StoryRequest) -> str:
+    """
+    Prevent repetitive or generic story titles from the Kaggle model.
+    If the model returns a repeated title like "The Hidden Path of Adrian",
+    the app replaces it with a genre-aware cinematic title.
+    """
+    generic_titles = [
+        "",
+        "Untitled Story",
+        "The Hidden Path",
+        f"The Hidden Path of {req.character_name}",
+    ]
+
+    title_pool = {
+        "romance": [
+            "Letters Beneath the Moonlight",
+            "The Violinist at Midnight",
+            "A Promise Beyond the Sea",
+            "When the Clock Tower Sang",
+            "The Last Letter Before Sunrise",
+            "Beneath the Lantern Sky",
+        ],
+        "sci-fi": [
+            "Echoes Beneath the Flood",
+            "Signal From the Drowned World",
+            "Fragments of Tomorrow",
+            "The Last Orbit",
+            "The Machine That Remembered",
+        ],
+        "mystery": [
+            "The Vanishing Hour",
+            "Whispers in Hollow Street",
+            "The Door No One Opened",
+            "Beneath the Fog",
+        ],
+        "fantasy": [
+            "The Moonlit Crown",
+            "The Sleeping Forest",
+            "Ashes of the Forgotten Realm",
+            "The Kingdom Beyond the Gate",
+        ],
+        "thriller": [
+            "Shadow Protocol",
+            "The Final Pursuit",
+            "Before the Signal Ends",
+            "The Midnight Chase",
+        ],
+        "adventure": [
+            "Beyond the Crimson Horizon",
+            "The Lost Expedition",
+            "Into the Forgotten Wilds",
+            "The Path Across Storm Seas",
+        ],
+        "horror": [
+            "The Hollow Below",
+            "The Last Candle",
+            "The House Beneath the Lake",
+            "When the Walls Whispered",
+        ],
+    }
+
+    cleaned = str(raw_title).strip()
+
+    if cleaned and cleaned not in generic_titles and "Hidden Path" not in cleaned and len(cleaned) > 6:
+        return cleaned
+
+    options = title_pool.get(
+        req.genre,
+        [
+            f"The Secret of {req.character_name}",
+            "A Story Beneath the Storm",
+            f"The Last Light of {req.setting.title()}",
+        ],
+    )
+
+    return random.choice(options)
+
+
 def parse_story_data(data: Dict[str, Any], req: StoryRequest) -> StoryResult:
     scenes = []
 
@@ -458,7 +537,10 @@ def parse_story_data(data: Dict[str, Any], req: StoryRequest) -> StoryResult:
     story = str(data.get("story", "Story text unavailable. Try regenerating."))
 
     return StoryResult(
-        title=str(data.get("title", "Untitled Story")),
+        title=make_unique_title(
+            data.get("title", ""),
+            req,
+        ),
         story=story,
         scenes=scenes,
         word_count=len(story.split()),
