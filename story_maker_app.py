@@ -496,26 +496,57 @@ def make_unique_title(raw_title: str, req: StoryRequest) -> str:
     return random.choice(options)
 
 
-return (
-    f"You are a creative fiction writer. "
-    f"ONLY write the story itself. "
-    f"Do NOT repeat instructions. "
-    f"Do NOT say phrases like 'Write a story' or 'Main character'. "
-    f"Do NOT explain the prompt. "
-    f"Start directly with the story.\n\n"
+def expand_short_prompt(
+    prompt_text: str,
+    genre: str,
+    tone: str,
+    character_name: str,
+    setting: str,
+    narrator_style: str,
+    plot_twist: bool,
+) -> str:
+    """
+    Automatically expands short user ideas into a fuller story brief before
+    sending them to the Kaggle model.
 
-    f"Story idea: {clean_prompt}. "
-    f"Genre: {genre}. "
-    f"Tone: {tone}. "
-    f"Main character: {character_name}. "
-    f"Setting: {setting}. "
+    Example:
+    "Cave with waterfall. Hidden treasure. Evil mask. Sad ending."
+    becomes a more complete story instruction with setting, conflict,
+    emotional stakes, and ending direction.
+    """
+    clean_prompt = " ".join(prompt_text.strip().split())
+    word_count = len(clean_prompt.split())
 
-    f"Use a clear beginning, middle, and ending. "
-    f"Make the story emotional, vivid, and easy to follow. "
-    f"Include visual moments suitable for scene images. "
-    f"{twist_instruction} "
-    f"Narration style: {narrator_style}."
-)
+    # Longer prompts are already detailed enough, so leave them alone.
+    if word_count > 22:
+        return clean_prompt
+
+    twist_instruction = (
+        "Include an earned plot twist that connects naturally to the ending."
+        if plot_twist
+        else "Do not force a plot twist; keep the ending emotionally consistent."
+    )
+
+    return (
+        f"You are a creative fiction writer. "
+        f"ONLY write the story itself. "
+        f"Do NOT repeat instructions. "
+        f"Do NOT say phrases like 'Write a story' or 'Main character'. "
+        f"Do NOT explain the prompt. "
+        f"Start directly with the story.\n\n"
+        f"Story idea: {clean_prompt}. "
+        f"Genre: {genre}. "
+        f"Tone: {tone}. "
+        f"Main character: {character_name}. "
+        f"Setting: {setting}. "
+        f"Use a clear beginning, middle, and ending. "
+        f"Make every important keyword from the idea central to the plot. "
+        f"Make the story emotional, vivid, and easy to follow. "
+        f"Include visual moments suitable for scene images. "
+        f"Match any requested ending mood such as sad, hopeful, tragic, or mysterious. "
+        f"{twist_instruction} "
+        f"Narration style: {narrator_style}."
+    )
 
 
 def build_scene_image_prompt(
@@ -528,15 +559,26 @@ def build_scene_image_prompt(
     Builds a short, reliable image prompt for each scene.
     Keeping this concise helps reduce Pollinations failures.
     """
+    style_map = {
+        "cinematic concept art": "cinematic concept art, dramatic movie lighting, ultra detailed",
+        "storybook illustration": "storybook illustration, soft painted style, whimsical",
+        "dark fantasy digital painting": "dark fantasy digital painting, gothic atmosphere",
+        "watercolor illustration": "watercolor illustration, painterly brush strokes, soft paper texture",
+        "noir film still": "black and white noir film still, moody shadows, vintage film grain",
+        "anime-inspired key visual": "anime key visual, vibrant anime art style, expressive character design",
+        "retro sci-fi poster": "retro sci-fi poster art, vintage science fiction aesthetic, bold graphic shapes",
+    }
+
+    style_text = style_map.get(req.art_style, req.art_style)
+
     return (
-        f"{req.art_style}. "
+        f"{style_text}. "
         f"{req.genre} {req.tone} scene. "
         f"Scene {scene.scene_number} of {total_scenes}: {scene.title}. "
-        f"{scene.description[:220]}. "
-        f"Original idea: {original_prompt[:160]}. "
-        f"Character: {req.character_name}. "
-        f"Setting: {req.setting}. "
-        f"Cinematic lighting, high detail, atmospheric, no text, no watermark."
+        f"{scene.description[:140]}. "
+        f"{req.character_name} in {req.setting}. "
+        f"Inspired by: {original_prompt[:120]}. "
+        f"No text, no watermark, highly detailed."
     )
 
 
@@ -548,9 +590,20 @@ def build_backup_image_prompt(
     """
     Extra-simple backup prompt if the richer scene prompt fails.
     """
+    style_map = {
+        "cinematic concept art": "cinematic concept art",
+        "storybook illustration": "storybook illustration, soft painted style",
+        "dark fantasy digital painting": "dark fantasy digital painting",
+        "watercolor illustration": "watercolor illustration, soft brush strokes",
+        "noir film still": "black and white noir film still",
+        "anime-inspired key visual": "anime key visual, vibrant colors",
+        "retro sci-fi poster": "retro sci-fi poster art, vintage print texture",
+    }
+    style_text = style_map.get(req.art_style, req.art_style)
+
     return (
-        f"{req.art_style}, {req.genre} scene, {req.character_name}, {req.setting}, "
-        f"{scene.title}, inspired by {original_prompt[:120]}, cinematic, high detail, no text"
+        f"{style_text}, {req.genre} scene, {req.character_name}, {req.setting}, "
+        f"{scene.title}, inspired by {original_prompt[:120]}, high detail, no text"
     )
 
 
@@ -649,7 +702,7 @@ def generate_image_from_prompt(
     retries: int = 1,
     width: int = 512,
     height: int = 320,
-    timeout: int = 35,
+    timeout: int = 18,
 ) -> Optional[Image.Image]:
     """
     Fast image generation through Pollinations AI.
@@ -999,10 +1052,10 @@ elif st.session_state.page == "generate":
                     img = generate_image_from_prompt(
                         image_prompt,
                         seed=unique_seed,
-                        retries=1 if fast_mode else 3,
-                        width=512 if fast_mode else 768,
-                        height=320 if fast_mode else 432,
-                        timeout=30 if fast_mode else 60,
+                        retries=2 if fast_mode else 4,
+                        width=448 if fast_mode else 768,
+                        height=256 if fast_mode else 432,
+                        timeout=18 if fast_mode else 60,
                     )
 
                     # In slower mode, try a backup prompt before falling back.
@@ -1024,7 +1077,7 @@ elif st.session_state.page == "generate":
                     return scene.scene_number, img
 
                 with st.spinner("Generating matching scene images…"):
-                    max_workers = min(len(result.scenes), 3 if fast_mode else 2)
+                    max_workers = 1 if fast_mode else 2
 
                     with ThreadPoolExecutor(max_workers=max_workers) as executor:
                         future_map = {
