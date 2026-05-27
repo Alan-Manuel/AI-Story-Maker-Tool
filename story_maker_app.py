@@ -22,6 +22,7 @@ from pydantic import BaseModel
 from dataclasses import dataclass
 from typing import List, Optional, Dict, Any
 from gradio_client import Client
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import random
 
 
@@ -527,15 +528,15 @@ def expand_short_prompt(
     )
 
     return (
-        f"Write a complete {tone} {genre} story based on this short idea: {clean_prompt}. "
-        f"The main character is {character_name}. "
-        f"The setting is {setting}. "
-        f"Expand the idea into a cinematic story with a clear beginning, middle, and ending. "
-        f"Make every important keyword from the short idea central to the plot, including any place, object, treasure, mask, curse, secret, monster, or ending mood mentioned by the user. "
-        f"Use vivid sensory details and strong visual moments that can be turned into scene images. "
-        f"Build emotional stakes for {character_name}, and make the ending match the user's requested outcome if one is included, such as a sad, tragic, hopeful, or mysterious ending. "
+        f"Write a concise {tone} {genre} short story from this idea: {clean_prompt}. "
+        f"Main character: {character_name}. Setting: {setting}. "
+        f"Use a clear beginning, middle, and ending. "
+        f"Make all keywords from the idea important to the plot. "
+        f"Include 2 to 3 vivid visual moments for scene images. "
+        f"Keep the story focused, emotional, and easy to follow. "
+        f"Match any requested ending mood such as sad, hopeful, tragic, or mysterious. "
         f"{twist_instruction} "
-        f"Use a {narrator_style} narration style."
+        f"Narration style: {narrator_style}."
     )
 
 
@@ -667,31 +668,34 @@ def build_pollinations_url(prompt: str, width: int = 768, height: int = 432, see
 def generate_image_from_prompt(
     prompt: str,
     seed: int = 42,
-    retries: int = 4
+    retries: int = 1,
+    width: int = 512,
+    height: int = 320,
+    timeout: int = 35,
 ) -> Optional[Image.Image]:
     """
-    Generate an image from Pollinations AI with stronger retry behavior.
+    Fast image generation through Pollinations AI.
 
-    Why this helps:
-    - Shortens very long prompts so the image endpoint is less likely to reject them.
-    - Uses smaller 768x432 images for faster/more reliable responses.
-    - Changes the seed on each retry.
-    - Adds a browser-like User-Agent.
+    Fast demo choices:
+    - smaller 512x320 images
+    - shorter prompts
+    - fewer retries
+    - lower timeout
     """
-    cleaned_prompt = " ".join(str(prompt).split())[:650]
+    cleaned_prompt = " ".join(str(prompt).split())[:420]
 
     for attempt in range(retries):
         try:
             url = build_pollinations_url(
                 cleaned_prompt,
-                width=768,
-                height=432,
+                width=width,
+                height=height,
                 seed=seed + (attempt * 137)
             )
 
             resp = requests.get(
                 url,
-                timeout=75,
+                timeout=timeout,
                 headers={
                     "User-Agent": "Mozilla/5.0",
                     "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
@@ -701,21 +705,20 @@ def generate_image_from_prompt(
 
             content_type = resp.headers.get("content-type", "").lower()
             if "image" not in content_type:
-                time.sleep(3)
+                time.sleep(0.5)
                 continue
 
             img = Image.open(io.BytesIO(resp.content)).convert("RGB")
             return img
 
         except Exception:
-            time.sleep(4)
+            time.sleep(0.75)
 
     return None
 
-
 def create_fallback_image(scene: Scene, genre: str, setting: str) -> Image.Image:
     """Fallback image if the image endpoint is unavailable."""
-    W, H = 768, 432
+    W, H = 512, 320
     palette = GENRE_PALETTES.get(genre, GENRE_PALETTES["mystery"])
     bg, mid, fg = palette
     img = Image.new("RGB", (W, H), color=bg)
@@ -808,8 +811,15 @@ with st.sidebar:
         options=list(TONE_WORDS.keys()),
         format_func=lambda t: t.capitalize(),
     )
-    num_scenes = st.slider("Scenes", min_value=2, max_value=5, value=3)
-    story_length = st.slider("Word count", min_value=150, max_value=700, value=400, step=50)
+    fast_mode = st.toggle(
+        "Fast demo mode",
+        value=True,
+        help="Uses shorter stories, fewer scenes, smaller images, and fewer retries for faster generation."
+    )
+    default_scenes = 2 if fast_mode else 3
+    default_words = 250 if fast_mode else 400
+    num_scenes = st.slider("Scenes", min_value=1, max_value=5, value=default_scenes)
+    story_length = st.slider("Word count", min_value=120, max_value=700, value=default_words, step=50)
     narrator_style = st.selectbox(
         "Narrator style",
         options=list(NARRATOR_STYLES.keys()),
@@ -927,7 +937,7 @@ elif st.session_state.page == "generate":
         value=st.session_state.last_prompt,
         placeholder="e.g. Max, in a crowded city alleyway, stumbles upon a glowing magical gate that wasn't there yesterday…",
         height=120,
-        help="The more specific your prompt, the more unique your story and generated images will be.",
+        help="You can type a few keywords. Short prompts are automatically expanded before generation.",
     )
 
     enh_col1, enh_col2 = st.columns([1, 4])
@@ -993,54 +1003,76 @@ elif st.session_state.page == "generate":
                 st.session_state.last_prompt = prompt_text
 
                 images = {}
-                with st.spinner("Generating matching scene images…"):
-                    for scene in result.scenes:
-                        image_prompt = build_scene_image_prompt(
+
+                def generate_scene_image(scene: Scene):
+                    image_prompt = build_scene_image_prompt(
+                        scene=scene,
+                        req=req,
+                        original_prompt=prompt_text,
+                        total_scenes=num_scenes,
+                    )
+
+                    unique_seed = abs(
+                        hash(
+                            f"{prompt_text}-{scene.scene_number}-{scene.title}-{scene.description}-{st.session_state.regenerate_count}"
+                        )
+                    ) % 100000
+
+                    img = generate_image_from_prompt(
+                        image_prompt,
+                        seed=unique_seed,
+                        retries=1 if fast_mode else 3,
+                        width=512 if fast_mode else 768,
+                        height=320 if fast_mode else 432,
+                        timeout=30 if fast_mode else 60,
+                    )
+
+                    # In slower mode, try a backup prompt before falling back.
+                    if img is None and not fast_mode:
+                        backup_prompt = build_backup_image_prompt(
                             scene=scene,
                             req=req,
                             original_prompt=prompt_text,
-                            total_scenes=num_scenes,
                         )
-
-                        unique_seed = abs(
-                            hash(
-                                f"{prompt_text}-{scene.scene_number}-{scene.title}-{scene.description}-{st.session_state.regenerate_count}"
-                            )
-                        ) % 100000
-
                         img = generate_image_from_prompt(
-                            image_prompt,
-                            seed=unique_seed,
-                            retries=4,
+                            backup_prompt,
+                            seed=unique_seed + 999,
+                            retries=2,
+                            width=768,
+                            height=432,
+                            timeout=60,
                         )
 
-                        # If the richer prompt fails, try one extra simple prompt before fallback.
-                        if img is None:
-                            backup_prompt = build_backup_image_prompt(
-                                scene=scene,
-                                req=req,
-                                original_prompt=prompt_text,
-                            )
-                            img = generate_image_from_prompt(
-                                backup_prompt,
-                                seed=unique_seed + 999,
-                                retries=2,
-                            )
+                    return scene.scene_number, img
 
-                        # Longer delay helps avoid rapid-fire image endpoint failures/rate limits.
-                        time.sleep(5)
+                with st.spinner("Generating matching scene images…"):
+                    max_workers = min(len(result.scenes), 3 if fast_mode else 2)
 
-                        if img:
-                            images[scene.scene_number] = img
-                        else:
-                            st.warning(
-                                f"Scene {scene.scene_number} image generation failed after retries — using fallback image."
-                            )
-                            images[scene.scene_number] = create_fallback_image(
-                                scene,
-                                req.genre,
-                                req.setting
-                            )
+                    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                        future_map = {
+                            executor.submit(generate_scene_image, scene): scene
+                            for scene in result.scenes
+                        }
+
+                        for future in as_completed(future_map):
+                            scene = future_map[future]
+                            try:
+                                scene_number, img = future.result()
+                            except Exception:
+                                img = None
+                                scene_number = scene.scene_number
+
+                            if img:
+                                images[scene_number] = img
+                            else:
+                                st.warning(
+                                    f"Scene {scene.scene_number} image generation failed — using fallback image."
+                                )
+                                images[scene.scene_number] = create_fallback_image(
+                                    scene,
+                                    req.genre,
+                                    req.setting
+                                )
 
                 st.session_state.images = images
 
