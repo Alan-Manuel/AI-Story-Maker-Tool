@@ -600,75 +600,45 @@ def build_backup_image_prompt(
 
 def clean_generated_story(story: str) -> str:
     """
-    Removes prompt/instruction echo from small Kaggle/HF model outputs.
-    The app should display only finished story prose.
+    Light cleanup only. This keeps the generated story instead of over-trimming it.
     """
     cleaned = str(story).strip()
 
-    # Remove common instruction blocks if the model echoed them.
-    echo_markers = [
-        "Create a finished short story only.",
-        "Do not include notes, labels, or prompt instructions.",
-        "Begin with the first sentence of the story.",
-        "Use this idea:",
-        "Story idea:",
-        "Genre:",
-        "Tone:",
-        "Main character:",
-        "Setting:",
-        "Narration style:",
-        "Return valid JSON only.",
-    ]
-
-    for marker in echo_markers:
-        if marker in cleaned:
-            parts = cleaned.split(marker)
-            # Prefer the text after the final echoed marker.
-            cleaned = parts[-1].strip()
-
-    bad_phrases = [
-        "You are a creative fiction writer.",
-        "ONLY write the story itself.",
-        "Do NOT repeat instructions.",
-        "Do NOT say phrases like 'Write a story' or 'Main character'.",
-        "Do NOT explain the prompt.",
-        "Start directly with the story.",
+    # Remove only obvious prompt boilerplate if it appears at the beginning.
+    bad_starts = [
         "Create a finished short story only.",
         "Do not include notes, labels, or prompt instructions.",
         "Begin with the first sentence of the story.",
     ]
 
-    for phrase in bad_phrases:
+    for phrase in bad_starts:
         cleaned = cleaned.replace(phrase, "").strip()
 
-    # If the model only returns a fragment like "cinematic...", avoid showing that as a full story.
-    if len(cleaned.split()) < 25:
-        return "Story text unavailable. Try regenerating or reduce the word count slightly."
+    # If the model echoes labels, remove the labels but keep surrounding prose.
+    label_replacements = {
+        "Core story idea:": "",
+        "Story idea:": "",
+        "Narration style:": "",
+        "Return valid JSON only.": "",
+    }
+    for label, replacement in label_replacements.items():
+        cleaned = cleaned.replace(label, replacement).strip()
 
-    return cleaned
-
+    return cleaned or "Story text unavailable. Try regenerating."
 
 def clean_scene_text(text: str, req: StoryRequest, scene_number: int) -> str:
     """
-    Prevent scene cards from showing prompt instructions instead of scene summaries.
+    Light cleanup for scene descriptions without replacing good model output.
     """
     cleaned = str(text).strip()
 
-    bad_markers = [
+    bad_phrases = [
         "Create a finished short story only.",
-        "Do not include notes",
-        "Use this idea:",
-        "Genre:",
-        "Tone:",
-        "Narration style:",
+        "Do not include notes, labels, or prompt instructions.",
         "Return valid JSON only.",
     ]
-
-    if any(marker in cleaned for marker in bad_markers) or len(cleaned.split()) > 90:
-        return (
-            f"{req.character_name} faces a key {req.genre} moment in {req.setting}, "
-            f"driven by the idea: {req.prompt[:120]}."
-        )
+    for phrase in bad_phrases:
+        cleaned = cleaned.replace(phrase, "").strip()
 
     return cleaned or f"{req.character_name} faces an important moment in {req.setting}."
 
@@ -764,10 +734,10 @@ def build_pollinations_url(prompt: str, width: int = 768, height: int = 432, see
 def generate_image_from_prompt(
     prompt: str,
     seed: int = 42,
-    retries: int = 1,
-    width: int = 512,
-    height: int = 320,
-    timeout: int = 45,
+    retries: int = 3,
+    width: int = 768,
+    height: int = 432,
+    timeout: int = 60,
 ) -> Optional[Image.Image]:
     """
     Fast image generation through Pollinations AI.
@@ -1100,76 +1070,61 @@ elif st.session_state.page == "generate":
 
                 images = {}
 
-                def generate_scene_image(scene: Scene):
-                    image_prompt = build_scene_image_prompt(
-                        scene=scene,
-                        req=req,
-                        original_prompt=prompt_text,
-                        total_scenes=num_scenes,
-                    )
-                    scene.image_prompt = image_prompt
-
-                    unique_seed = abs(
-                        hash(
-                            f"{prompt_text}-{scene.scene_number}-{scene.title}-{scene.description}-{st.session_state.regenerate_count}"
-                        )
-                    ) % 100000
-
-                    img = generate_image_from_prompt(
-                        image_prompt,
-                        seed=unique_seed,
-                        retries=2 if fast_mode else 4,
-                        width=512 if fast_mode else 768,
-                        height=320 if fast_mode else 432,
-                        timeout=45 if fast_mode else 60,
-                    )
-
-                    # In slower mode, try a backup prompt before falling back.
-                    if img is None and not fast_mode:
-                        backup_prompt = build_backup_image_prompt(
+                with st.spinner("Generating matching scene images…"):
+                    for scene in result.scenes:
+                        image_prompt = build_scene_image_prompt(
                             scene=scene,
                             req=req,
                             original_prompt=prompt_text,
+                            total_scenes=num_scenes,
                         )
+                        scene.image_prompt = image_prompt
+
+                        unique_seed = abs(
+                            hash(
+                                f"{prompt_text}-{scene.scene_number}-{scene.title}-{scene.description}-{st.session_state.regenerate_count}"
+                            )
+                        ) % 100000
+
                         img = generate_image_from_prompt(
-                            backup_prompt,
-                            seed=unique_seed + 999,
-                            retries=2,
+                            image_prompt,
+                            seed=unique_seed,
+                            retries=3,
                             width=768,
                             height=432,
                             timeout=60,
                         )
 
-                    return scene.scene_number, img
+                        # Try one simpler backup prompt before using fallback.
+                        if img is None:
+                            backup_prompt = build_backup_image_prompt(
+                                scene=scene,
+                                req=req,
+                                original_prompt=prompt_text,
+                            )
+                            img = generate_image_from_prompt(
+                                backup_prompt,
+                                seed=unique_seed + 999,
+                                retries=2,
+                                width=768,
+                                height=432,
+                                timeout=60,
+                            )
 
-                with st.spinner("Generating matching scene images…"):
-                    max_workers = 1 if fast_mode else 2
+                        # Small delay prevents rapid-fire failures/rate limits.
+                        time.sleep(2)
 
-                    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                        future_map = {
-                            executor.submit(generate_scene_image, scene): scene
-                            for scene in result.scenes
-                        }
-
-                        for future in as_completed(future_map):
-                            scene = future_map[future]
-                            try:
-                                scene_number, img = future.result()
-                            except Exception:
-                                img = None
-                                scene_number = scene.scene_number
-
-                            if img:
-                                images[scene_number] = img
-                            else:
-                                st.warning(
-                                    f"Scene {scene.scene_number} image generation failed — using fallback image."
-                                )
-                                images[scene.scene_number] = create_fallback_image(
-                                    scene,
-                                    req.genre,
-                                    req.setting
-                                )
+                        if img:
+                            images[scene.scene_number] = img
+                        else:
+                            st.warning(
+                                f"Scene {scene.scene_number} image generation failed — using fallback image."
+                            )
+                            images[scene.scene_number] = create_fallback_image(
+                                scene,
+                                req.genre,
+                                req.setting
+                            )
 
                 st.session_state.images = images
 
