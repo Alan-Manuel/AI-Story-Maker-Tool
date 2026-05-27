@@ -528,21 +528,15 @@ def expand_short_prompt(
     )
 
     return (
-        f"You are a creative fiction writer. "
-        f"ONLY write the story itself. "
-        f"Do NOT repeat instructions. "
-        f"Do NOT say phrases like 'Write a story' or 'Main character'. "
-        f"Do NOT explain the prompt. "
-        f"Start directly with the story.\n\n"
-        f"Story idea: {clean_prompt}. "
-        f"Genre: {genre}. "
-        f"Tone: {tone}. "
-        f"Main character: {character_name}. "
-        f"Setting: {setting}. "
+        f"Create a finished short story only. Do not include notes, labels, or prompt instructions. "
+        f"Begin with the first sentence of the story. "
+        f"Use this idea: {clean_prompt}. "
+        f"The protagonist is {character_name}. "
+        f"The setting is {setting}. "
+        f"Genre: {genre}. Tone: {tone}. "
         f"Use a clear beginning, middle, and ending. "
         f"Make every important keyword from the idea central to the plot. "
-        f"Make the story emotional, vivid, and easy to follow. "
-        f"Include visual moments suitable for scene images. "
+        f"Include vivid, image-friendly moments. "
         f"Match any requested ending mood such as sad, hopeful, tragic, or mysterious. "
         f"{twist_instruction} "
         f"Narration style: {narrator_style}."
@@ -607,6 +601,49 @@ def build_backup_image_prompt(
     )
 
 
+
+def clean_generated_story(story: str) -> str:
+    """
+    Removes prompt/instruction echo from small Kaggle/HF model outputs.
+    This lets users type short ideas while still showing only the story.
+    """
+    cleaned = str(story).strip()
+
+    # If the model repeats the prompt/instructions, keep the part most likely to be story text.
+    markers = [
+        "Start directly with the story.",
+        "Narration style:",
+        "Story idea:",
+        "ONLY write the story itself.",
+        "Do NOT explain the prompt.",
+    ]
+
+    for marker in markers:
+        if marker in cleaned:
+            cleaned = cleaned.split(marker)[-1].strip()
+
+    # Remove leftover instruction fragments if they still appear.
+    bad_phrases = [
+        "You are a creative fiction writer.",
+        "ONLY write the story itself.",
+        "Do NOT repeat instructions.",
+        "Do NOT say phrases like 'Write a story' or 'Main character'.",
+        "Do NOT explain the prompt.",
+        "Start directly with the story.",
+    ]
+
+    for phrase in bad_phrases:
+        cleaned = cleaned.replace(phrase, "").strip()
+
+    # If the model leaves metadata before the actual story, trim common labels.
+    for label in ["Genre:", "Tone:", "Main character:", "Setting:"]:
+        if label in cleaned and len(cleaned.split(label)[0]) < 80:
+            cleaned = cleaned.split(label)[-1].strip()
+
+    # Final fallback so UI never looks empty.
+    return cleaned or "Story text unavailable. Try regenerating."
+
+
 def parse_story_data(data: Dict[str, Any], req: StoryRequest) -> StoryResult:
     scenes = []
 
@@ -646,7 +683,7 @@ def parse_story_data(data: Dict[str, Any], req: StoryRequest) -> StoryResult:
                 ),
             ))
 
-    story = str(data.get("story", "Story text unavailable. Try regenerating."))
+    story = clean_generated_story(data.get("story", "Story text unavailable. Try regenerating."))
 
     return StoryResult(
         title=make_unique_title(
