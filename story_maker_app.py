@@ -496,48 +496,26 @@ def make_unique_title(raw_title: str, req: StoryRequest) -> str:
     return random.choice(options)
 
 
-def expand_short_prompt(
-    prompt_text: str,
-    genre: str,
-    tone: str,
-    character_name: str,
-    setting: str,
-    narrator_style: str,
-    plot_twist: bool,
-) -> str:
-    """
-    Automatically expands short user ideas into a fuller story brief before
-    sending them to the Kaggle model.
+return (
+    f"You are a creative fiction writer. "
+    f"ONLY write the story itself. "
+    f"Do NOT repeat instructions. "
+    f"Do NOT say phrases like 'Write a story' or 'Main character'. "
+    f"Do NOT explain the prompt. "
+    f"Start directly with the story.\n\n"
 
-    Example:
-    "Cave with waterfall. Hidden treasure. Evil mask. Sad ending."
-    becomes a more complete story instruction with setting, conflict,
-    emotional stakes, and ending direction.
-    """
-    clean_prompt = " ".join(prompt_text.strip().split())
-    word_count = len(clean_prompt.split())
+    f"Story idea: {clean_prompt}. "
+    f"Genre: {genre}. "
+    f"Tone: {tone}. "
+    f"Main character: {character_name}. "
+    f"Setting: {setting}. "
 
-    # Longer prompts are already detailed enough, so leave them alone.
-    if word_count > 22:
-        return clean_prompt
-
-    twist_instruction = (
-        "Include an earned plot twist that connects naturally to the ending."
-        if plot_twist
-        else "Do not force a plot twist; keep the ending emotionally consistent."
-    )
-
-    return (
-        f"Write a concise {tone} {genre} short story from this idea: {clean_prompt}. "
-        f"Main character: {character_name}. Setting: {setting}. "
-        f"Use a clear beginning, middle, and ending. "
-        f"Make all keywords from the idea important to the plot. "
-        f"Include 2 to 3 vivid visual moments for scene images. "
-        f"Keep the story focused, emotional, and easy to follow. "
-        f"Match any requested ending mood such as sad, hopeful, tragic, or mysterious. "
-        f"{twist_instruction} "
-        f"Narration style: {narrator_style}."
-    )
+    f"Use a clear beginning, middle, and ending. "
+    f"Make the story emotional, vivid, and easy to follow. "
+    f"Include visual moments suitable for scene images. "
+    f"{twist_instruction} "
+    f"Narration style: {narrator_style}."
+)
 
 
 def build_scene_image_prompt(
